@@ -44,3 +44,8 @@ INSTALADOR_FINAL/
 *.key
 license_database.json
 trade_history.json
+
+key_gen.py
+license_generator.py
+licenses.json
+data/licenses.json
