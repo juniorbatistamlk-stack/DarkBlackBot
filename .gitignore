@@ -49,3 +49,6 @@ key_gen.py
 license_generator.py
 licenses.json
 data/licenses.json
+
+# Updates directory (has its own repo)
+updates/
