@@ -1,0 +1,36 @@
+{
+    "strategy_meta": {
+        "name": "FIMATHE_Automated_Protocol",
+        "author_reference": "Marcelo Ferreira",
+        "version": "2.0_Python_Ready",
+        "description": "Estratégia baseada em geometria de mercado, canais duplicáveis e Price Action puro."
+    },
+    "global_settings": {
+        "timeframe_main": "M15",
+        "timeframe_confirmation": "M15",
+        "asset_class": [
+            "FOREX",
+            "INDICES_HK50",
+            "XAUUSD"
+        ],
+        "magic_number": 123456
+    },
+    "operational_logic": {
+        "channel_construction": {
+            "method": "DYNAMIC_HIGHLOW_LOOKBACK",
+            "lookback_periods": 20,
+            "min_channel_points": 100,
+            "max_channel_points": 500
+        },
+        "entry_triggers": {
+            "confirmation_type": "CANDLE_CLOSE",
+            "filter_oscillation": {
+                "active": true
+            }
+        }
+    },
+    "risk_management_constraints": {
+        "max_drawdown_per_trade": 0.01,
+        "max_daily_loss": 0.03
+    }
+}

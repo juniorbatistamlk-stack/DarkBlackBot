@@ -1,0 +1,39 @@
+{
+  "licenses": [
+    {
+      "id": "4f8f2a0c41cc4baf",
+      "name": "Junior Batista",
+      "whatsapp": "17991235756",
+      "key_hash": "2c0f9ba06065dca5da9a02e147398832a4ff56851e498d7f98d06f4b86264d00",
+      "key_preview": "DBB-4F1D...23F9",
+      "used": false,
+      "activated_at": null,
+      "hwid": null,
+      "created_at": "2025-12-22T00:33:31.840211",
+      "expires_at": "2026-12-22T00:33:31.840211",
+      "days": 365
+    },
+    {
+      "id": "b72fd12d09530e6f",
+      "name": "Junior",
+      "whatsapp": "17991235756",
+      "key_hash": "f93979dfbd1eb3f38158a4641a2418b5dd0e570dc36d98282e19374487d697a2",
+      "key_preview": "DBB-6B6F...6809",
+      "used": true,
+      "activated_at": "2025-12-22T00:37:15.122173",
+      "hwid": "f257c251bea5d9f1",
+      "created_at": "2025-12-22T00:36:03.635768",
+      "expires_at": "2026-12-17T00:36:03.635768",
+      "days": 360
+    },
+    {
+      "license_key": "DBB-8B37F3B9-95F6427C7F8214EF-20261223",
+      "customer_name": "junior",
+      "hwid": "8B37F3B9041AAB5A4BAE5DC402FD47B1",
+      "expiry_date": "2026-12-23",
+      "created_at": "2025-12-23 00:21:59",
+      "status": "active"
+    }
+  ],
+  "total_sales": 1
+}
