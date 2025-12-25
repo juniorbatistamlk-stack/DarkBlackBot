@@ -453,13 +453,16 @@ class IQHandler:
             self._log(f"[IQ] ⚠️ OTC M1/M5 forçado. Ajustando M{duration} → M5 para {pair}.")
             duration = 5
 
-        # VERIFICAR CONEXÃO ANTES DE COMEÇAR
-        self._log(f"[IQ] 🔍 Verificando conexão antes do trade...")
-        if not self._ensure_connected():
-            self._log("[IQ] ❌ Conexão não estabelecida. Abortando trade.")
-            return False, "Falha na conexão - não foi possível conectar"
+        # VERIFICAR CONEXÃO (Lightweight)
+        if not self.api:
+             self._log("[IQ] ❌ API não inicializada. Tentando conectar...")
+             if not self._ensure_connected():
+                 return False, "Falha na conexão"
         
-        self._log(f"[IQ] ✓ Conexão OK. Executando trade...")
+        # self._log(f"[IQ] 🔍 Conexão OK. Executando trade...") -> Menos log
+        self._log(f"[IQ] 🚀 Executando {action} em {pair}...")
+        
+        # Executando loop de tentativas...
         
         max_retries = 2
         fallback_tried = False
@@ -604,17 +607,19 @@ class IQHandler:
                 result[1] = str(e)
         
         try:
-            with self._lock:
-                thread = threading.Thread(target=_buy_thread)
-                thread.start()
-                thread.join(timeout=15)
-                
-                if thread.is_alive():
-                    self._log("[IQ] ⚠️ TIMEOUT: Operação excedeu 15 segundos!")
-                    self.last_error = "API timeout (15s)"
-                    return False, "Timeout ao executar trade - Tente novamente"
+            # Não bloquear no lock global para trade, apenas para conexão
+            # with self._lock: -> REMOVIDO para evitar deadlock/espera em trade
+            
+            thread = threading.Thread(target=_buy_thread)
+            thread.start()
+            thread.join(timeout=6) # 6 segundos máximo para execução!
+            
+            if thread.is_alive():
+                self._log("[IQ] ⚠️ TIMEOUT: Operação excedeu 6 segundos!")
+                self.last_error = "API timeout (6s)"
+                return False, "Timeout ao executar trade - Tente novamente"
         except Exception as e:
-            self._log(f"[IQ] ❌ Erro crítico no lock de threading: {e}")
+            self._log(f"[IQ] ❌ Erro crítico threading: {e}")
             return False, f"Erro de threading: {str(e)}"
                     
         return result[0], result[1]

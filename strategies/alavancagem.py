@@ -284,11 +284,12 @@ class AlavancagemStrategy(BaseStrategy):
         # Parâmetros por modo (ajustes cirúrgicos para aumentar sinais sem virar "metralhadora")
         if self.mode == "FLEX":
             return {
-                "vol_min_pct": 0.05,        # REVERTIDO: Aceita volatilidade baixa (0.05% mínimo)
-                "min_range_atr": 0.05,      # REVERTIDO: Aceita velas pequenas (5% do ATR)
-                "flow_body_min": 0.40,      # REVERTIDO: Aceita corpos menores (40%)
-                "sr_tol_mult": 0.005,       # Zona S/R mais ampla para garantir detecção
-                "atr_valid_factor": 0.50,   # REVERTIDO: Validação de ATR frouxa (50%)
+                "vol_min_pct": 0.0535,      # +7% rigor (era 0.05)
+                "min_range_atr": 0.0535,    # +7% rigor (era 0.05)
+                # Corpo: 40% -> 43%
+                "flow_body_min": 0.43,      # +7% rigor: exige velas levemente mais cheias
+                "sr_tol_mult": 0.005,       # Mantido (zona de S/R)
+                "atr_valid_factor": 0.535,  # +7% rigor na validação ATR (era 0.50)
                 "sr_strength_min": 1,       # 1 toque já serve de alerta
                 "allow_countertrend_sr_reversal": True,
                 "allow_sr_breakout": True,

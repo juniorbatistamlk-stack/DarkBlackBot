@@ -251,10 +251,10 @@ INSTRUCOES (MINDSET: CAÇADOR DE ALPHA):
 6. REJEITE APENAS SE FOR ERRO GROTESCO (ex: comprar topo sem rompimento).
 7. Histórico ruim? Ignore se o gráfico atual estiver bonito. O passado não dita o futuro imediato.
 
-RESPONDA APENAS:
+RESPONDA APENAS SEGUINDO ESTE MODELO (EM PORTUGUÊS):
 DECISAO: CONFIRMAR ou REJEITAR
 CONFIANCA: 0-100
-MOTIVO: maximo 15 palavras (foque em oportunidade/risco técnico)"""
+MOTIVO: [Explicação técnica curta e direta em Português do Brasil]"""
     
     def _adjust_confidence_by_winrate(self, confidence, pattern_desc):
         """
