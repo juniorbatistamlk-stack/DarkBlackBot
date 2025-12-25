@@ -148,7 +148,18 @@ class AlavancagemSRStrategy(BaseStrategy):
                 return None, "Cancelado: Entrada Repetida"
 
             self.last_entry_price = current_price
-            return signal, desc
+            # 🤖 VALIDAÇÃO IA
+        if signal and self.ai_analyzer:
+            try:
+                zones = {"support": [], "resistance": []}
+                trend_data = {"trend": "NEUTRAL", "setup": "SR_LEVERAGE", "pattern": desc[:20]}
+                should_trade, confidence, ai_reason = self.validate_with_ai(signal, desc, candles, zones, trend_data, pair)
+                if not should_trade:
+                    return None, f"🤖-❌ IA bloqueou: {ai_reason[:30]}... ({confidence}%)"
+                desc = f"{desc} | 🤖✓{confidence}%"
+            except:
+                desc = f"{desc} | ⚠️ IA offline"
+        return signal, desc
 
         return None, f"Monitorando Zonas... ({len(self.sr_zones)} ilhas)"
 

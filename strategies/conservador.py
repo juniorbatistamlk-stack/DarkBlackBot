@@ -144,6 +144,23 @@ class ConservadorStrategy(BaseStrategy):
         
         if not signal:
             return None, f"Aguardando rompimento válido | Preço: {close:.5f}"
+        
+        # 🤖 VALIDAÇÃO IA: IA é o "juiz final" de cada entrada
+        if self.ai_analyzer:
+            try:
+                zones = {"support": [], "resistance": []}
+                trend_data = {"trend": self.trend, "setup": "BREAKOUT", "pattern": "CHANNEL"}
+                
+                should_trade, confidence, ai_reason = self.validate_with_ai(
+                    signal, desc, candles, zones, trend_data, pair
+                )
+                
+                if not should_trade:
+                    return None, f"🤖-❌ IA bloqueou: {ai_reason[:30]}... ({confidence}%)"
+                
+                desc = f"{desc} | 🤖✓{confidence}%"
+            except:
+                desc = f"{desc} | ⚠️ IA offline"
             
         return signal, desc
 

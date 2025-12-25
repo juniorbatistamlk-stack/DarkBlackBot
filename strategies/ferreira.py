@@ -185,6 +185,22 @@ class FerreiraStrategy(BaseStrategy):
                 # Actually for continuation we want trend, but if 7 candles, maybe scary.
                 # Let's trust the logic: if clean trend, go. If Exhaustion, blocked above.
                 pass
+        
+        # 🤖 VALIDAÇÃO IA: IA é o "juiz final" de cada entrada
+        if signal and self.ai_analyzer:
+            try:
+                trend_data = {"trend": trend, "setup": desc.split(":")[0], "pattern": "SNR" if "SNR" in desc else "FLOW"}
+                
+                should_trade, confidence, ai_reason = self.validate_with_ai(
+                    signal, desc, candles, {"support": zones, "resistance": zones}, trend_data, pair
+                )
+                
+                if not should_trade:
+                    return None, f"🤖-❌ IA bloqueou: {ai_reason[:30]}... ({confidence}%)"
+                
+                desc = f"{desc} | 🤖✓{confidence}%"
+            except:
+                desc = f"{desc} | ⚠️ IA offline"
                 
         return signal, desc
 

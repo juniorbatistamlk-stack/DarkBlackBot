@@ -114,6 +114,17 @@ class PriceActionStrategy(BaseStrategy):
         if body_size <= (total_size * 0.1):
             return None, "Doji (Indecisão) - Validando..."
             
+        # 🤖 VALIDAÇÃO IA
+        if signal and self.ai_analyzer:
+            try:
+                zones = {"support": [], "resistance": []}
+                trend_data = {"trend": "NEUTRAL", "setup": "REVERSAL", "pattern": desc[:20]}
+                should_trade, confidence, ai_reason = self.validate_with_ai(signal, desc, candles, zones, trend_data, pair)
+                if not should_trade:
+                    return None, f"🤖-❌ IA bloqueou: {ai_reason[:30]}... ({confidence}%)"
+                desc = f"{desc} | 🤖✓{confidence}%"
+            except:
+                desc = f"{desc} | ⚠️ IA offline"
         return signal, desc
 
     def is_near_support(self, price, swing_lows, tolerance=0.00015):

@@ -49,15 +49,29 @@ class LogicaPrecoStrategy(BaseStrategy):
             # Vela Verde (Bullish) travou na RESISTÊNCIA de um Comando Baixa (ou similar)
             if previous['close'] > previous['open']:
                 if nearest_zone['type'] == 'RESISTANCE':
-                    # Gatilho: Não rompeu (Close <= Zone + buffer)
-                    # User: "Travou o corpo NA LINHA"
-                    return "PUT", "🤐 TRAVAMENTO DE ALTA EM RESISTÊNCIA"
+                    signal = "PUT"
+                    desc = "🤐 TRAVAMENTO DE ALTA EM RESISTÊNCIA"
                     
             # CASO COMPRA (CALL)
             # Vela Vermelha (Bearish) travou no SUPORTE
             if previous['close'] < previous['open']:
                 if nearest_zone['type'] == 'SUPPORT':
-                    return "CALL", "🤐 TRAVAMENTO DE BAIXA EM SUPORTE"
+                    signal = "CALL"
+                    desc = "🤐 TRAVAMENTO DE BAIXA EM SUPORTE"
+            
+            # 🤖 VALIDAÇÃO IA
+            if signal and self.ai_analyzer:
+                try:
+                    trend_data = {"trend": "NEUTRAL", "setup": "LOCK", "pattern": desc[:20]}
+                    should_trade, confidence, ai_reason = self.validate_with_ai(signal, desc, candles, {"support": zones, "resistance": zones}, trend_data, pair)
+                    if not should_trade:
+                        return None, f"🤖-❌ IA bloqueou: {ai_reason[:30]}... ({confidence}%)"
+                    desc = f"{desc} | 🤖✓{confidence}%"
+                except:
+                    desc = f"{desc} | ⚠️ IA offline"
+            
+            if signal:
+                return signal, desc
                     
         return None, f"Monitorando Travamentos... (Zonas: {len(zones)})"
 

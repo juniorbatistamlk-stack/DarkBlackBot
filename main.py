@@ -3,31 +3,38 @@ import sys
 import time
 import threading
 import logging
-import traceback  # For debugging
-from datetime import datetime
-from rich.console import Console
-from rich.live import Live
-from rich.prompt import Prompt, IntPrompt, FloatPrompt
-from rich.panel import Panel
+import traceback
 import os
 import socket
+from datetime import datetime
 
-# Define timeout global para TODAS as conexões (30s)
-socket.setdefaulttimeout(30)
+# External Libs
+from rich.console import Console
+from rich.align import Align
+from rich.live import Live
+from rich.panel import Panel
+from rich.prompt import Prompt, IntPrompt, FloatPrompt
+from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.markup import escape
+from rich.text import Text
+from rich import box
+from rich.padding import Padding
+from rich.console import Group
+from dotenv import load_dotenv
 
-# Force UTF-8 encoding for Windows terminals
-if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding='utf-8')
-
-# Suppress internal logging
-logging.disable(logging.CRITICAL)
-logging.getLogger().setLevel(logging.CRITICAL)
-
+# Internal Modules
 from config import Config
 from api.iq_handler import IQHandler
 from ui.dashboard import Dashboard
+from ui.cli_style import header_panel, menu_table, info_kv, print_panel, title_panel, section
+from utils.ai_analyzer import AIAnalyzer
+from utils.memory import TradingMemory
+from utils.backtester import Backtester
+from utils.smart_trader import SmartTrader
+from utils.license_system import check_license
+from utils.window_manager import set_console_icon, set_console_title
 
-# Strategy Imports
+# Strategies
 from strategies.ferreira import FerreiraStrategy
 from strategies.price_action import PriceActionStrategy
 from strategies.logica_preco import LogicaPrecoStrategy
@@ -35,11 +42,34 @@ from strategies.ana_tavares import AnaTavaresStrategy
 from strategies.conservador import ConservadorStrategy
 from strategies.alavancagem import AlavancagemStrategy
 from strategies.alavancagem_sr import AlavancagemSRStrategy
-from utils.ai_analyzer import AIAnalyzer
-from utils.memory import TradingMemory
-from utils.backtester import Backtester
-from utils.smart_trader import SmartTrader
-from utils.license_system import check_license
+
+# =============================================================================
+# SETUP GLOBAL
+# =============================================================================
+load_dotenv()
+
+# Timeout global para conexões (30s)
+socket.setdefaulttimeout(30)
+
+# Force UTF-8 for Windows
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding='utf-8')
+
+# Suppress internal logging
+logging.disable(logging.CRITICAL)
+logging.getLogger().setLevel(logging.CRITICAL)
+
+console = Console(style="white on black")
+
+
+def black_spacer(lines: int = 1) -> None:
+    """Imprime linhas preenchidas com fundo preto para evitar faixas cinzas no terminal."""
+    try:
+        width = max(1, int(console.size.width))
+    except Exception:
+        width = 120
+    for _ in range(max(0, int(lines))):
+        console.print(" " * width, style="on black")
 
 # Shared State
 current_profit = 0.0
@@ -47,24 +77,14 @@ worker_status = "Iniciando..."
 stop_threads = False
 bot_logs = []
 
-console = Console()
-
-# =============================================================================
-# SISTEMA DE LICENCIAMENTO
-# =============================================================================
 def verify_license():
     """Verifica licença antes de iniciar"""
-    console.print("\\n[bright_cyan]🔐 Verificando licença...[/bright_cyan]\\n")
-    
-    valid = check_license()
-    
-    if not valid:
-        console.print("\\n[red]❌ Não foi possível iniciar o bot.[/red]")
-        input("\\nPressione ENTER para sair...")
+    console.print(Align.center("[dim]🔐 Verificando autenticidade...[/dim]"), style="on black")
+    if not check_license():
+        console.print("[red]❌ Não foi possível iniciar o bot. Licença inválida.[/red]", style="on black")
+        input("\nPressione ENTER para sair...")
         sys.exit(1)
-    
     return True
-
 
 def log_msg(msg):
     global bot_logs
@@ -74,36 +94,36 @@ def log_msg(msg):
         bot_logs.pop(0)
 
 def get_strategy(choice, api, ai_analyzer=None):
-    if choice == 1: return FerreiraStrategy(api, ai_analyzer)
-    if choice == 2: return PriceActionStrategy(api, ai_analyzer)
-    if choice == 3: return LogicaPrecoStrategy(api, ai_analyzer)
-    if choice == 4: return AnaTavaresStrategy(api, ai_analyzer)
-    if choice == 5: return ConservadorStrategy(api, ai_analyzer)
-    if choice == 6: return AlavancagemStrategy(api, ai_analyzer)
-    if choice == 7: return AlavancagemSRStrategy(api, ai_analyzer)
-    return FerreiraStrategy(api, ai_analyzer)
+    strategies = {
+        1: FerreiraStrategy,
+        2: PriceActionStrategy,
+        3: LogicaPrecoStrategy,
+        4: AnaTavaresStrategy,
+        5: ConservadorStrategy,
+        6: AlavancagemStrategy,
+        7: AlavancagemSRStrategy
+    }
+    strategy_cls = strategies.get(choice, FerreiraStrategy)
+    return strategy_cls(api, ai_analyzer)
 
 def select_pairs(api):
-    console.print("\n" + "═" * 70)
-    console.print("[bold cyan]📊 SELEÇÃO DE MERCADO (OTC)[/bold cyan]")
-    console.print("═" * 70)
-    console.print("[dim]Modo exclusivo: OTC (24h)[/dim]\n")
+    from rich import box
+    from rich.table import Table
+
+    # print_panel(console, header_panel("Seleção de Mercado • OTC 24h")) -> REMOVIDO
+    # console.print(Align.center("[bold white]SELEÇÃO DE MERCADO OTC[/]"))
+    print_panel(console, title_panel("SELEÇÃO DE MERCADO OTC", "OTC 24h", border_style="bright_cyan"))
     
-    # Lista Completa de Pares OTC
-    assets_otc = [
-        # Majors
+    # Lista Completa de Pares OTC (modo normal)
+    target_assets = [
         "EURUSD-OTC", "GBPUSD-OTC", "USDJPY-OTC", "AUDUSD-OTC", "USDCAD-OTC", "NZDUSD-OTC", "USDCHF-OTC",
-        # Crosses
         "EURJPY-OTC", "GBPJPY-OTC", "AUDJPY-OTC", "CADJPY-OTC", "EURGBP-OTC", "EURCAD-OTC", "EURAUD-OTC", 
         "EURNZD-OTC", "GBPCAD-OTC", "GBPCHF-OTC", "GBPAUD-OTC", "GBPNZD-OTC", "AUDCAD-OTC", "AUDCHF-OTC",
-        "AUDNZD-OTC", "CADCHF-OTC", "NZDJPY-OTC",
-        # Commodities / Crypto / Stocks (Opcionais, mas focando em Forex OTC)
-        "XAUUSD-OTC" # Gold
+        "AUDNZD-OTC", "CADCHF-OTC", "NZDJPY-OTC", "XAUUSD-OTC"
     ]
     
-    target_assets = assets_otc
-    
-    console.print("\n[bold]Escaneando paridades OTC disponíveis...[/bold]")
+    black_spacer(1)
+    console.print("[dim]Escaneando paridades OTC disponíveis...[/dim]", style="on black")
     scan = api.scan_available_pairs(target_assets)
     
     open_assets = []
@@ -112,18 +132,32 @@ def select_pairs(api):
             open_assets.append((a, scan[a]['payout']))
             
     if not open_assets:
-        console.print("[red]Nenhum ativo OTC encontrado![/red]")
-        console.print("[yellow]Isso é incomum. Verifique se a corretora não está em manutenção.[/yellow]")
+        print_panel(console, info_kv(
+            "OTC",
+            [("Status", "[bold bright_red]Nenhum ativo OTC encontrado[/]"), ("Dica", "[dim]Verifique se a corretora está online.[/]")],
+            border_style="bright_cyan",
+        ))
         return ["EURUSD-OTC"] # Fallback
-        
-    console.print(f"[green]Ativos OTC Disponíveis:[/green]")
+
+    # Lista com linhas divisórias
+    t = Table(box=box.MINIMAL, expand=True, show_lines=True)
+    t.style = "on black"
+    t.add_column("#", justify="center", style="dim", width=4)
+    t.add_column("Ativo", justify="center", style="bold white")
+    t.add_column("Payout", justify="center")
     for i, (asset, payout) in enumerate(open_assets):
-        payout_color = "green" if payout >= 80 else "yellow"
-        console.print(f"{i+1}. {asset} ([{payout_color}]{payout}%[/{payout_color}])")
+        p_color = "bright_green" if payout >= 80 else "bright_magenta" if payout >= 70 else "white"
+        t.add_row(str(i + 1), asset, f"[{p_color}]{payout:.0f}%[/]")
+
+    # Cabeçalho da lista simples
+    console.print(Align.center(f"[dim]Total: {len(open_assets)} ativos encontrados[/dim]"), style="on black")
+    # print_panel(console, info_kv("Lista", [("Ativos", "")], border_style="white")) -> REMOVIDO
+    console.print(t, style="on black")
+    console.rule(style="dim on black") # Fechamento visual sutil
         
     choices = Prompt.ask("Escolha (ex: 1,2,3 ou 'todas')", default="todas")
     
-    if choices.lower() == 'todas' or choices.lower() == 'all':
+    if choices.lower() in ['todas', 'all']:
         selected = [x[0] for x in open_assets]
     else:
         indices = [int(x)-1 for x in choices.split(",") if x.strip().isdigit()]
@@ -131,67 +165,50 @@ def select_pairs(api):
         
     return selected if selected else [open_assets[0][0]]
 
-class StderrRedirector:
-    def __init__(self, logger_func):
-        self.logger_func = logger_func
-        self._in_write = False  # Prevent recursion
-        
-    def write(self, message):
-        # Prevent infinite loops and filter empty messages
-        if self._in_write or not message or not message.strip():
-            return
-            
-        try:
-            self._in_write = True
-            # Only log actual errors, not debug noise
-            if any(keyword in message.lower() for keyword in ['error', 'exception', 'traceback', 'ssl', 'eof', 'timeout']):
-                self.logger_func(f"[red][ERRO] {message.strip()}[/red]")
-        finally:
-            self._in_write = False
-            
-    def flush(self):
-        pass
-
 def run_trading_session(api, strategy, pairs, cfg, memory, ai_analyzer):
     global current_profit, worker_status, stop_threads, bot_logs
     
-    # Reset State
     current_profit = 0.0
     stop_threads = False
     bot_logs = []
     
-    # Atualizar config com paridades selecionadas
     cfg.asset = ", ".join(pairs) if len(pairs) > 1 else pairs[0]
-    
-    # Criar dashboard
     dashboard = Dashboard(cfg)
     
-    # Função para logs do sistema (IA/IQ)
     def log_system_msg(msg):
-        dashboard.log(msg)  # Dashboard separa automaticamente [AI] e [IQ]
+        dashboard.log(msg)
     
-    # Redirecionar STDERR para o dashboard (Captura erros SSL/Connection)
-    # DESABILITADO: Causa duplicação do banner no Live display
-    # sys.stderr = StderrRedirector(log_system_msg)
-    
-    # Conectar logger da API (IQHandler)
-    if hasattr(api, 'set_logger'):
-        api.set_logger(log_system_msg)
+    # Conectando loggers
+    if hasattr(api, 'set_logger'): api.set_logger(log_system_msg)
         
     smart_trader = SmartTrader(api, strategy, pairs, memory, {}, ai_analyzer)
-    smart_trader.set_system_logger(log_system_msg)  # Conectar logger do sistema
+    smart_trader.set_system_logger(log_system_msg)
+
+    # Conectar logger da IA ao painel do sistema (se existir)
+    if ai_analyzer and hasattr(ai_analyzer, 'set_logger'):
+        ai_analyzer.set_logger(log_system_msg)
+        dashboard.log("[AI] ✅ IA conectada ao painel")
+    elif not ai_analyzer:
+        dashboard.log("[AI] ⚠️ IA desativada nesta sessão")
     
-    # Conectar logger da estratégia ao dashboard (se suportado)
-    if hasattr(strategy, 'set_logger'):
-        strategy.set_logger(log_system_msg)
+    if hasattr(strategy, 'set_logger'): strategy.set_logger(log_system_msg)
     
-    console.print(Panel(f"[bold green]🚀 ROBÔ INICIADO - {strategy.name}[/bold green]\nParidades: {', '.join(pairs)}", border_style="green"))
+    console.print(
+        Panel(
+            f"[bold green]🚀 ROBÔ INICIADO - {strategy.name}[/bold green]\nParidades: {', '.join(pairs)}",
+            border_style="green",
+            style="on black",
+            expand=True,
+        ),
+        style="on black",
+    )
     
     def worker():
         global current_profit, worker_status, stop_threads
-        
         last_candle_traded = None
         cached_signal = None
+
+        failed_pairs_this_candle = set()
         
         log_msg(f"[green]✅ Trader Ativo: {strategy.name}[/green]")
         
@@ -223,99 +240,117 @@ def run_trading_session(api, strategy, pairs, cfg, memory, ai_analyzer):
                 # === CALCULAR TIMING ===
                 candle_duration = cfg.timeframe * 60
                 
+                # Obter timestamp seguro com tratamento de erro
                 try:
-                    # Obter timestamp com retry
-                    server_time = None
-                    try:
-                        if api.api:
-                            server_time = api.api.get_server_timestamp()
-                    except Exception:
-                        pass
-                    
-                    # Tentativa extra se None
-                    if server_time is None:
-                        time.sleep(0.5)
-                        try:
-                            if api.api:
-                                server_time = api.api.get_server_timestamp()
-                        except Exception:
-                            pass
-                    
-                    if server_time is None:
-                        worker_status = "⚠️ Sincronizando relógio..."
-                        time.sleep(2)
-                        continue
-                    
-                    # Validar que é um número válido antes de qualquer conta
-                    if not isinstance(server_time, (int, float)) or server_time <= 0:
-                        worker_status = "⚠️ Tempo inválido, aguardando..."
-                        time.sleep(2)
-                        continue
-                        
-                    # CRITICAL FIX: Ensure no NoneType math
-                    candle_start = int(server_time) - (int(server_time) % int(candle_duration))
-                    candle_end = candle_start + candle_duration
-                    seconds_left = candle_end - server_time
-                    seconds_elapsed = server_time - candle_start
-                    
-                    # ID único da vela atual
-                    current_candle = candle_start
-                    
-                    # Já operou nesta vela? Aguardar próxima
-                    if last_candle_traded == current_candle:
-                        worker_status = f"⏳ Aguardando próxima vela ({int(seconds_left)}s)"
-                        time.sleep(1)
-                        continue
-                    
-                    # PERÍODO INICIAL (0-29s) - Aguardar e limpar cache
-                    if seconds_elapsed < 30:
-                        cached_signal = None
-                        worker_status = f"💤 Aguardando ({int(seconds_elapsed)}/30s)"
-                        time.sleep(1)
-                        continue
-                    
-                    # PERÍODO DE ANÁLISE E EXECUÇÃO (30-60s)
-                    # Buscar sinal se não tem
-                    if cached_signal is None:
-                        worker_status = f"🔍 Analisando mercado..."
-                        cached_signal = smart_trader.analyze_all_pairs(cfg.timeframe)
-                        if cached_signal:
-                            log_msg(f"[cyan]📊 SINAL: {cached_signal['pair']} {cached_signal['signal']}[/cyan]")
-                            log_msg(f"[yellow]📋 {cached_signal['desc']}[/yellow]")
-                    
-                    # Executar no segundo 58-59 (últimos 2 segundos)
-                    if cached_signal and seconds_left <= 2:
-                        worker_status = "⚡ EXECUTANDO NO SEGUNDO 59!"
-                        log_msg(f"[bold green]🚀 DISPARANDO: {cached_signal['pair']} {cached_signal['signal']}[/bold green]")
-                        log_msg(f"[cyan]📋 MOTIVO: {cached_signal['desc']}[/cyan]")
-                        
-                        profit = smart_trader.execute_trade(cached_signal, cfg, log_msg)
-                        current_profit += profit
-                        cfg.balance = api.get_balance()
-                        
-                        last_candle_traded = current_candle
-                        cached_signal = None
-                        log_msg(f"[dim]Trade finalizado. Lucro: R${profit:.2f}[/dim]")
-                        time.sleep(2)
-                    
-                    elif cached_signal:
-                        worker_status = f"🎯 SINAL PRONTO! Disparando em {int(seconds_left)}s"
-                        time.sleep(0.5)
-                    
-                    else:
-                        worker_status = f"📊 Buscando setup ({int(seconds_elapsed)}s)"
-                        time.sleep(1)
-                    
-                except Exception as e:
-                    # Log full traceback for debugging
-                    tb = traceback.format_exc()
-                    log_msg(f"[yellow]Erro: {e}[/yellow]")
-                    log_msg(f"[dim]{tb[:500]}[/dim]")  # Mostrar traceback no dashboard
+                    server_time = api.get_server_timestamp()
+                except Exception:
+                    # Se falhar (desconexão/sync), força None para cair na validação abaixo
+                    server_time = 0
+                
+                # Sincronização básica
+                if server_time <= 0:
+                    worker_status = "⚠️ Sincornizando relógio..."
+                    time.sleep(1)
+                    continue
+
+                # Validar que é um número válido antes de qualquer conta
+                if not isinstance(server_time, (int, float)) or server_time <= 0:
+                    worker_status = "⚠️ Tempo inválido, aguardando..."
                     time.sleep(2)
+                    continue
+
+                # CRITICAL FIX: Ensure no NoneType math
+                candle_start = int(server_time) - (int(server_time) % int(candle_duration))
+                candle_end = candle_start + candle_duration
+                seconds_left = candle_end - server_time
+                seconds_elapsed = server_time - candle_start
+                
+                # ID único da vela atual
+                current_candle = candle_start
+                
+                # Resetar blacklist quando muda a vela
+                if last_candle_traded != current_candle and seconds_elapsed < 2:
+                    failed_pairs_this_candle.clear()
+                
+                # Já operou nesta vela? Aguardar próxima
+                if last_candle_traded == current_candle:
+                    worker_status = f"⏳ Aguardando próxima vela ({int(seconds_left)}s)"
+                    time.sleep(1)
+                    continue
+                
+                # OTIMIZAÇÃO DE IA (ECONOMIA DE TOKENS)
+                # M1: Analisa nos últimos 15s | M5+: Analisa no último 45s (mais sinais)
+                ai_window = 15 if cfg.timeframe == 1 else 45
+                
+                if seconds_left > ai_window:
+                    cached_signal = None
+                    wait_t = int(seconds_left - ai_window)
+                    worker_status = f"⏳ Aguardando Janela IA | M{cfg.timeframe} ({wait_t}s)"
+                    time.sleep(1)
+                    continue
+                
+                # PERÍODO DE ANÁLISE E EXECUÇÃO (30-60s)
+                # Buscar sinal se não tem
+                if cached_signal is None:
+                    worker_status = f"🔍 Analisando {len(pairs)} pares..."
+                    analysis_start = time.time()
+                    try:
+                        cached_signal = smart_trader.analyze_all_pairs(cfg.timeframe, exclude_pairs=failed_pairs_this_candle)
+                    except Exception as e:
+                        analysis_elapsed = time.time() - analysis_start
+                        log_msg(f"[yellow]⚠️ Erro na análise ({analysis_elapsed:.1f}s): {str(e)[:50]}[/yellow]")
+                        cached_signal = None
+                    
+                    analysis_elapsed = time.time() - analysis_start
+                    if cached_signal:
+                        log_msg(f"[cyan]📊 SINAL: {cached_signal['pair']} {cached_signal['signal']} ({analysis_elapsed:.1f}s)[/cyan]")
+                        log_msg(f"[yellow]📋 {escape(str(cached_signal.get('desc', '')))}[/yellow]")
+                    elif analysis_elapsed > 20:
+                        log_msg(f"[yellow]⏱️ Análise demorou {analysis_elapsed:.1f}s - pode haver gargalo[/yellow]")
+
+                # Executar no segundo 59 (último segundo antes do fechamento)
+                # Janela de disparo (evita perder entrada por latência / refresh)
+                entry_window = 6.0  # segundos (janela mais ampla para não perder entrada)
+
+                if cached_signal and seconds_left <= entry_window:
+                    worker_status = f"⚡ EXECUTANDO (janela {entry_window:.0f}s)!"
+                    log_msg(f"[bold green]🚀 DISPARANDO: {cached_signal['pair']} {cached_signal['signal']}[/bold green]")
+                    log_msg(f"[cyan]📋 MOTIVO: {escape(str(cached_signal.get('desc', '')))}[/cyan]")
+                    
+                    profit = smart_trader.execute_trade(cached_signal, cfg, log_msg)
+
+                    # Se a ordem NÃO abriu (ex: ativo indisponível), não travar a vela inteira.
+                    # Marca o par como falho nesta vela e tenta outro setup.
+                    if not getattr(smart_trader, 'last_order_opened', False):
+                        failed_pairs_this_candle.add(cached_signal.get('pair'))
+                        cached_signal = None
+                        worker_status = "⚠️ Ordem não abriu. Tentando outro ativo..."
+                        time.sleep(0.5)
+                        continue
+
+                    # Ordem abriu: atualizar saldo e marcar a vela como operada.
+                    current_profit += profit
+                    cfg.balance = api.get_balance()
+                    
+                    last_candle_traded = current_candle
+                    cached_signal = None
+                    log_msg(f"[dim]Trade finalizado. Lucro: R${profit:.2f}[/dim]")
+                    time.sleep(2)
+                
+                elif cached_signal:
+                    worker_status = f"🎯 SINAL PRONTO! Disparando em {int(seconds_left)}s"
+                    time.sleep(0.5)
+                
+                else:
+                    worker_status = f"📊 Buscando setup ({int(seconds_elapsed)}s)"
+                    time.sleep(1)
                     
             except Exception as e:
-                log_msg(f"[red]Erro: {str(e)}[/red]")
-                time.sleep(5)
+                # Log full traceback for debugging
+                tb = traceback.format_exc()
+                log_msg(f"[yellow]Erro: {e}[/yellow]")
+                log_msg(f"[dim]{tb[:500]}[/dim]")  # Mostrar traceback no dashboard
+                time.sleep(2)
 
     # Start Worker
     t = threading.Thread(target=worker, daemon=True)
@@ -338,49 +373,49 @@ def run_trading_session(api, strategy, pairs, cfg, memory, ai_analyzer):
                 live.update(dashboard.render(current_profit, secs), refresh=True)
                 
                 # Sleep adequado para não consumir CPU desnecessária
-                time.sleep(0.2)
+                # VS Code terminal pode piscar com refresh muito agressivo
+                time.sleep(0.35)
                 
-        console.print("\n[yellow]Sessão Encerrada. Pressione Enter para voltar...[/yellow]")
+        console.print("\n[yellow]Sessão Encerrada. Pressione Enter para voltar...[/yellow]", style="on black")
         input()
         
     except KeyboardInterrupt:
         stop_threads = True
-        console.print("\n[yellow]Parando...[/yellow]")
+        console.print("\n[yellow]Parando...[/yellow]", style="on black")
 
 def main():
     global stop_threads
     
     # 1. License Check - Sistema Simplificado
-    from utils.window_manager import set_console_icon, set_console_title
-    set_console_title("Dark Black Bot - AI Powered")
-    set_console_icon("icon.ico")
-
     if not verify_license():
         return
     
-    console.print()  # Espaço
+    # Set window title and icon AFTER console is ready
+    import time
+    from utils.window_manager import set_console_icon, set_console_title
+    set_console_title("Dark Black Bot - AI Powered")
+    time.sleep(0.1)  # Small delay to ensure console is ready
+    set_console_icon("icon.ico")
+    
+    # Evitar "faixas" cinzas: imprimir espaçador com fundo preto
+    black_spacer(1)
+
+    # Cabeçalho limpo (apenas espaço)
+    # print_panel(console, header_panel("v3.5 • Smart Execution • AI Assisted")) -> REMOVIDO PARA LIMPEZA
     
     # Modern Professional Startup Banner
     from rich.progress import Progress, SpinnerColumn, TextColumn
     import time
     
     startup_banner = """
-[bold blue]══════════════════════════════════════════════════════════════════════════════[/bold blue]
-
- [bold cyan]██████╗  █████╗ ██████╗ ██╗  ██╗[/bold cyan]  [bold bright_cyan]██████╗ ██╗      █████╗  ██████╗██╗  ██╗[/bold bright_cyan]
- [bold cyan]██╔══██╗██╔══██╗██╔══██╗██║ ██╔╝[/bold cyan]  [bold bright_cyan]██╔══██╗██║     ██╔══██╗██╔════╝██║ ██╔╝[/bold bright_cyan]
- [bold cyan]██║  ██║███████║██████╔╝█████╔╝ [/bold cyan]  [bold bright_cyan]██████╔╝██║     ███████║██║     █████╔╝[/bold bright_cyan]
- [bold cyan]██║  ██║██╔══██║██╔══██╗██╔═██╗ [/bold cyan]  [bold bright_cyan]██╔══██╗██║     ██╔══██║██║     ██╔═██╗[/bold bright_cyan]
- [bold cyan]██████╔╝██║  ██║██║  ██║██║  ██╗[/bold cyan]  [bold bright_cyan]██████╔╝███████╗██║  ██║╚██████╗██║  ██╗[/bold bright_cyan]
- [bold cyan]╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝[/bold cyan]  [bold bright_cyan]╚═════╝ ╚══════╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝[/bold bright_cyan]
-
-                   [bold bright_cyan]⚡ CHEFÃO DAS BINÁRIAS ⚡[/bold bright_cyan]
-         [dim bright_white]Real-Time Analysis  │  Smart Execution  │  AI Powered[/dim bright_white]
-
-[bold blue]══════════════════════════════════════════════════════════════════════════════[/bold blue]
+[bold bright_white]DARK[/][bold white]BLACK[/] [bold bright_magenta]AI[/]
+[dim]Professional Trading Intelligence[/dim]
 """
     
-    console.print(startup_banner)
+    # Banner com fundo 100% preto (sem áreas cinzas fora do texto)
+    banner_text = Text.from_markup(startup_banner.strip("\n"), justify="center")
+    console.print(Align.center(banner_text), style="on black")
+    black_spacer(1)
     
     # Loading Animation
     with Progress(
@@ -394,278 +429,465 @@ def main():
     # 2. Config & Login
     cfg = Config()
     
-    console.print("\n[bold blue]╡ CONEXÃO IQ OPTION ╞[/bold blue]")
-    console.print("[dim bright_white]Autenticando credenciais...[/dim bright_white]\n")
+    print_panel(console, title_panel("CONEXÃO IQ OPTION", border_style="bright_cyan"))
+
+    print_panel(
+        console,
+        menu_table(
+            "TIPO DE CONTA",
+            [
+                ("1", "TREINAMENTO (PRACTICE)", "Modo seguro para testar configurações"),
+                ("2", "CONTA REAL", "Use apenas com gestão e disciplina"),
+            ],
+            border_style="bright_magenta",
+        ),
+    )
     
-    # Account Type Selection
-    console.print("[bold bright_white]Selecione o Tipo de Conta:[/bold bright_white]")
-    console.print("[bright_cyan]  1. 🛡️  CONTA DE TREINAMENTO (PRACTICE)[/bright_cyan]")
-    console.print("[bright_green]  2. 💰 CONTA REAL (REAL MONEY)[/bright_green]")
     acc_choice = IntPrompt.ask("  Opção", choices=["1", "2"], default=1)
     cfg.account_type = "REAL" if acc_choice == 2 else "PRACTICE"
     
     cfg.email = os.getenv("IQ_EMAIL") or Prompt.ask("  📧 [bright_white]Email[/bright_white]")
     cfg.password = os.getenv("IQ_PASSWORD") or Prompt.ask("  🔑 [bright_white]Senha[/bright_white]", password=True)
-    
-    # Connection with progress bar
-    console.print()
-    with Progress(
-        SpinnerColumn("dots", style="bright_cyan"),
-        TextColumn("[bright_cyan]{task.description}"),
-        transient=False
-    ) as progress:
-        task = progress.add_task("[bright_cyan]Conectando ao servidor IQ Option...", total=None)
-        api = IQHandler(cfg)
-        if not api.connect():
-            console.print("[bold red]✗ Falha na autenticação![/bold red]")
-            return
-        progress.update(task, description="[bright_green]✓ Conectado com sucesso!")
-        time.sleep(0.5)
-            
-    cfg.balance = api.get_balance()
-    
-    # Show correct balance type
-    acc_label = "REAL" if cfg.account_type == "REAL" else "TREINAMENTO"
-    color = "bright_green" if cfg.account_type == "REAL" else "bright_cyan"
-    
-    console.print(f"[bright_white]  💰 Saldo ({acc_label}):[/bright_white] [{color}]R$ {cfg.balance:.2f}[/{color}]\n")
-    
-    # 3. IA Setup
-    ai_analyzer = None
-    console.print("[bold blue]╡ INTEGRAÇÃO COM IA ╞[/bold blue]")
-    console.print("[dim bright_white]Ativar sistema de análise inteligente OpenRouter (Llama 3.3)?[/dim bright_white]\n")
-    
-    if Prompt.ask("  🤖 [bright_white]Ativar IA?[/bright_white]", choices=["s", "n"], default="s") == "s":
-        try:
-            with Progress(
-                SpinnerColumn("dots", style="bright_magenta"),
-                TextColumn("[bright_magenta]{task.description}"),
-                transient=False
-            ) as progress:
-                task = progress.add_task("[bright_magenta]Inicializando modelo neural...", total=None)
-                key = os.getenv("OPENROUTER_API_KEY", "")
-                ai_analyzer = AIAnalyzer(key)
-                progress.update(task, description="[bright_green]✓ IA inicializada com sucesso!")
-                time.sleep(0.5)
-            
-            console.print("[dim bright_white]  • Modelo: Llama 3.3 70B | Latência: ~2s | Status: Online[/dim bright_white]\n")
-        except Exception as e:
-            console.print(f"[bright_red]  ✗ Falha ao inicializar IA: {e}[/bright_red]")
-            console.print("[bright_cyan]  ⚠️  Continuando sem validação de IA...[/bright_cyan]\n")
-    else:
-        console.print("[bright_cyan]  ⚠️  IA desativada. Rodando apenas com estratégia...[/bright_cyan]\n")
 
-    # === MENU LOOP ===
-    while True:
-        console.print("\n" + "═" * 70)
-        console.print("[bold bright_cyan]╡ MENU PRINCIPAL ╞[/bold bright_cyan]")
-        console.print("═" * 70 + "\n")
-        console.print("[bright_white]  1.[/bright_white] [bold bright_green]🚀 INICIAR OPERAÇÕES (Live Trading)[/bold bright_green]")
-        console.print("     [dim]→ Executar estratégia em tempo real[/dim]\n")
-        console.print("[bright_white]  2.[/bright_white] [bold bright_blue]📊 SIMULADOR (Backtest)[/bold bright_blue]")
-        console.print("     [dim]→ Testar estratégias em dados históricos[/dim]\n")
-        console.print("[bright_white]  3.[/bright_white] [bold bright_red]🚪 Sair[/bold bright_red]\n")
-        console.print("═" * 70)
+    api = None
+    try:
+        # Connection with progress bar
+        black_spacer(1)
+        with Progress(
+            SpinnerColumn("dots", style="bright_cyan"),
+            TextColumn("[bright_cyan]{task.description}"),
+            transient=True
+        ) as progress:
+            task = progress.add_task("[bright_cyan]Conectando ao servidor IQ Option...", total=None)
+            api = IQHandler(cfg)
+            if not api.connect():
+                console.print(Padding("[bold red]✗ Falha na autenticação![/bold red]", (0,0), style="on black", expand=True))
+                return
+            time.sleep(1.5)
+            
+        console.print(Padding("[bright_green]✓ Conectado com sucesso![/bright_green]", (0,0), style="on black", expand=True))
+            
+        cfg.balance = api.get_balance()
         
-        mode = IntPrompt.ask("Opção", choices=["1", "2", "3"], default=1)
+        # Show correct balance type
+        # Show correct balance type
+        acc_label = "REAL" if cfg.account_type == "REAL" else "TREINAMENTO"
+        color = "bright_green" if cfg.account_type == "REAL" else "bright_cyan"
         
-        if mode == 3: break
+        console.print(Padding(f"[bright_white]  💰 Saldo ({acc_label}):[/bright_white] [{color}]R$ {cfg.balance:.2f}[/{color}]", (0,0), style="on black", expand=True))
+        black_spacer(1)
         
-        if mode == 1: # LIVE TRADING
-            console.print("\n")
-            console.print("[bold bright_cyan]╔══════════════════════════════════════════════════════════════════════╗[/bold bright_cyan]")
-            console.print("[bold bright_cyan]║[/bold bright_cyan]         [bold white]📊 CENTRAL DE ESTRATÉGIAS[/bold white]                                    [bold bright_cyan]║[/bold bright_cyan]")
-            console.print("[bold bright_cyan]╠══════════════════════════════════════════════════════════════════════╣[/bold bright_cyan]")
-            console.print("[bold bright_cyan]║[/bold bright_cyan] [dim]Selecione uma estratégia baseada no seu perfil de risco:[/dim]             [bold bright_cyan]║[/bold bright_cyan]")
-            console.print("[bold bright_cyan]╚══════════════════════════════════════════════════════════════════════╝[/bold bright_cyan]")
-            
-            # CONSERVADOR
-            console.print("\n[bold bright_green]▓▓▓ PERFIL CONSERVADOR ▓▓▓[/bold bright_green]")
-            console.print("─" * 70)
-            
-            console.print("[bright_green]  1.[/bright_green] [bold white]🎯 FERREIRA TRADER[/bold white] [dim]│ FIMATHE System[/dim]")
-            console.print("      [bright_cyan]→[/bright_cyan] Segue tendências e rompe canais de preço")
-            console.print("      [dim]📈 Win Rate: 65-70% │ Sinais: Médio │ Risco: ●●○○○[/dim]")
-            
-            console.print("\n[bright_green]  2.[/bright_green] [bold white]🔄 PRICE ACTION REVERSAL[/bold white] [dim]│ SMC + Liquidity[/dim]")
-            console.print("      [bright_cyan]→[/bright_cyan] Reversões em zonas de liquidez institucional")
-            console.print("      [dim]📈 Win Rate: 68-72% │ Sinais: Baixo │ Risco: ●○○○○[/dim]")
-            
-            console.print("\n[bright_green]  5.[/bright_green] [bold white]🛡️ CONSERVADOR[/bold white] [dim]│ High Precision[/dim]")
-            console.print("      [bright_cyan]→[/bright_cyan] Filtros rigorosos, poucos sinais, alta precisão")
-            console.print("      [dim]📈 Win Rate: 75-80% │ Sinais: Muito Baixo │ Risco: ●○○○○[/dim]")
-            
-            # MODERADO - Blue theme
-            console.print("\n[bold bright_blue]━━━ PERFIL MODERADO ━━━[/bold bright_blue] [dim bright_white](Risco Médio)[/dim bright_white]")
-            console.print("─" * 70)
-            
-            console.print("[bright_blue]  3.[/bright_blue] [bold white]📊 LÓGICA DO PREÇO[/bold white] [dim]│ Candlestick Patterns[/dim]")
-            console.print("      [bright_cyan]→[/bright_cyan] Padrões clássicos: Doji, Hammer, Engulfing")
-            console.print("      [dim]📈 Win Rate: 62-68% │ Sinais: Alto │ Risco: ●●●○○[/dim]")
-            
-            console.print("\n[bright_blue]  4.[/bright_blue] [bold white]⚡ ANA TAVARES[/bold white] [dim]│ Hybrid System[/dim]")
-            console.print("      [bright_cyan]→[/bright_cyan] Combina fluxo de tendência com retração")
-            console.print("      [dim]📈 Win Rate: 65-70% │ Sinais: Médio │ Risco: ●●●○○[/dim]")
-            
-            # AGRESSIVO
-            console.print("\n[bold bright_red]▓▓▓ PERFIL AGRESSIVO ▓▓▓[/bold bright_red] [blink]⚠️[/blink]")
-            console.print("─" * 70)
-            
-            console.print("[bright_red]  6.[/bright_red] [bold white]🚀 ALAVANCAGEM LTA/LTB[/bold white] [dim]│ Trend + S/R Zones[/dim]")
-            console.print("      [bright_cyan]→[/bright_cyan] Fluxo a favor da tendência + Reversões em S/R")
-            console.print("      [bright_cyan]→[/bright_cyan] Analisa 200 velas para detectar zonas")
-            console.print("      [dim]📈 Win Rate: 60-68% │ Sinais: Alto │ Risco: ●●●●○[/dim]")
-            console.print("      [bright_cyan]⚠️  Stakes progressivos: 2% → 5% → 10% → 20%[/bright_cyan]")
-            
-            console.print("\n[bright_red]  7.[/bright_red] [bold white]💎 S/R SNIPER PRO[/bold white] [dim]│ Precision Reversal[/dim] [bright_green]⭐ RECOMENDADO[/bright_green]")
-            console.print("      [bright_cyan]→[/bright_cyan] Opera APENAS reversões em zonas fortes")
-            console.print("      [bright_cyan]→[/bright_cyan] Valida com 5 padrões técnicos + confirmação")
-            console.print("      [dim]📈 Win Rate: 70-78% │ Sinais: Baixo │ Risco: ●●●●●[/dim]")
-            console.print("      [bright_cyan]⚠️  Alta precisão, alto risco por trade[/bright_cyan]")
-            
-            console.print("\n[bold bright_cyan]═══════════════════════════════════════════════════════════════════════[/bold bright_cyan]")
-            
-            sc = IntPrompt.ask("[bright_white]Selecione a Estratégia[/bright_white]", choices=["1","2","3","4","5","6","7"])
-            
-            # Warning Risk
-            if sc in [6, 7]:
-                console.print("\n" + "="*70)
-                console.print("[bold red]⚠️  AVISO DE RISCO ELEVADO ⚠️[/bold red]")
-                console.print("="*70)
-                console.print("[yellow]As estratégias de Alavancagem utilizam:[/yellow]")
-                console.print("  • Anti-Martingale: Stakes aumentam após vitórias (2% → 4% → 7% → 12% → 20%)")
-                console.print("  • Gerenciamento agressivo: Um único trade pode usar 20% da banca")
-                console.print("  • Risco de ruína elevado: Sequências de perdas podem zerar a conta")
-                console.print("\n[bold white]Estas estratégias são adequadas APENAS para:[/bold white]")
-                console.print("  ✓ Traders experientes com disciplina rigorosa")
-                console.print("  ✓ Contas de teste ou capital de risco")
-                console.print("  ✓ Quem compreende e aceita o risco de perda total\n")
-                console.print("[bold red]VOCÊ PODE PERDER TODO O SEU CAPITAL.[/bold red]")
-                console.print("="*70 + "\n")
-                console.print("[yellow]Você pode perder TODO seu capital.[/yellow]")
-                if IntPrompt.ask("Aceitar risco? [1=Sim, 2=Não]", choices=["1", "2"], default=2) == 2:
-                    console.print("[green]Decisão prudente! Retornando ao menu...[/green]")
-                    continue
-            
-            
-            strategy = get_strategy(sc, api, ai_analyzer)
-            console.print(f"\n[bold green]✓ Estratégia Selecionada: {strategy.name}[/bold green]\n")
-            
-            pairs = select_pairs(api)
-            
-            # Parametros
-            console.print("\n" + "="*70)
-            console.print("[bold cyan]⚙️  CONFIGURAÇÃO DE PARÂMETROS[/bold cyan]")
-            console.print("="*70 + "\n")
-            
-            console.print("\n[bold]1. Valor da Entrada Inicial[/bold]")
-            console.print("   [dim]Valor investido no primeiro trade (R$)[/dim]")
-            cfg.amount = FloatPrompt.ask("   Valor", default=10.0)
+        # 3. IA Setup
+        ai_analyzer = None
+        print_panel(console, title_panel("INTEGRAÇÃO COM IA", "Validação inteligente de entradas", border_style="bright_cyan"))
+        black_spacer(1)
+        console.print(Padding("  [dim]Validação inteligente de entradas com contexto gráfico.[/dim]", (0,0), style="on black", expand=True))
+        
+        # 1. Carregar configuração atual
+        current_key = os.getenv("AI_API_KEY") or os.getenv("OPENROUTER_API_KEY") or os.getenv("GROQ_API_KEY") or os.getenv("GEMINI_API_KEY")
+        current_provider = os.getenv("AI_PROVIDER", "openrouter")
+        
+        # Se achou chave específica antiga, tenta deduzir o provider
+        if not os.getenv("AI_API_KEY"):
+            if os.getenv("GROQ_API_KEY"): current_provider = "groq"
+            elif os.getenv("GEMINI_API_KEY"): current_provider = "gemini"
+        
+        should_configure = False
+        use_ai = "n"
 
-            console.print("\n[bold]1.1. Tipo de Opção PREFERIDA[/bold]")
-            console.print("   [dim]Qual tipo de contrato priorizar?[/dim]")
-            console.print("   [1] ⚡ Binárias (Expiração fixa, ~85%)")
-            console.print("   [2] 📈 Digitais (Venda antecipada, ~87% - 92%)")
-            console.print("   [3] 🤖 Melhor Payout (O robô escolhe o que pagar mais)")
-            op_type = IntPrompt.ask("   Opção", choices=["1", "2", "3"], default=3)
+        if current_key:
+            display_prov = current_provider.upper() if current_provider else "IA"
+            console.print(Padding(f"[dim]Configuração detectada: {display_prov}[/dim]", (0,0), style="on black", expand=True))
             
-            if op_type == 1: cfg.option_type = "BINARY"
-            elif op_type == 2: cfg.option_type = "DIGITAL"
-            else: cfg.option_type = "BEST"
+            print_panel(
+                console,
+                menu_table(
+                    "IA • Opções",
+                    [
+                        ("1", f"Usar {display_prov}", "Manter a chave atual"),
+                        ("2", "Configurar novo", "Inserir e validar uma nova API Key"),
+                        ("3", "Desativar", "Continuar sem validação de IA"),
+                    ],
+                    border_style="bright_magenta",
+                ),
+            )
             
-            console.print("\n[bold]2. Timeframe (Período de Análise)[/bold]")
-            console.print("   [dim]1 = M1 (1 min) | 5 = M5 (5 min) | 15 = M15 (15 min) | 30 = M30 (30 min)[/dim]")
-            console.print("   [bright_green]✨ Recomendado: M5 (melhor relação sinal/ruído)[/bright_green]")
+            action = Prompt.ask(
+                "  🤖 [bright_white]Escolha uma opção[/bright_white]", 
+                choices=["1", "2", "3"], 
+                default="1"
+            )
+            
+            if action == "2":
+                should_configure = True
+            elif action == "1":
+                use_ai = "s"
+            else: # action == "3"
+                use_ai = "n"
+        else:
+            console.print(Padding("[yellow]Nenhuma chave de IA detectada.[/yellow]", (0,0), style="on black", expand=True))
+            if Prompt.ask("  🤖 [bright_white]Deseja configurar a IA agora?[/bright_white]", choices=["s", "n"], default="s") == "s":
+                should_configure = True
+
+        # SETUP WIZARD
+        if should_configure:
+            black_spacer(1)
+            black_spacer(1)
+            print_panel(
+                console,
+                menu_table(
+                    "Escolha o Provedor",
+                    [
+                        ("1", "OpenRouter", "Padrão • Llama 3.3"),
+                        ("2", "Groq", "Ultra rápido • Llama 3"),
+                        ("3", "Gemini", "Google • Flash 1.5"),
+                    ],
+                    border_style="bright_cyan",
+                ),
+            )
+            
+            p_map = {"1": "openrouter", "2": "groq", "3": "gemini"}
+            choice = Prompt.ask("Opção", choices=["1", "2", "3"], default="1")
+            current_provider = p_map[choice]
             
             while True:
-                cfg.timeframe = IntPrompt.ask("   Timeframe", default=5)
+                black_spacer(1)
+                console.print(Padding(f"[bold]Cole sua API Key do {current_provider.upper()}:[/bold]", (0,0), style="on black", expand=True))
+                console.print(Padding("[dim](Clique com botão direito para colar | ENTER para cancelar)[/dim]", (0,0), style="on black", expand=True))
+                input_key = Prompt.ask("API Key", password=True)
                 
-                # AVISO CRÍTICO PARA M1
-                if cfg.timeframe == 1:
-                    console.print("\n" + "="*70)
-                    console.print("[bold yellow]⚠️  AVISO IMPORTANTE - TIMEFRAME M1 (1 MINUTO) ⚠️[/bold yellow]")
-                    console.print("="*70)
-                    console.print("\n[bold white]Por que NÃO recomendamos M1:[/bold white]\n")
-                    console.print("  [red]❌[/red] [yellow]Alto nível de RUÍDO de mercado (movimentos aleatórios)[/yellow]")
-                    console.print("  [red]❌[/red] [yellow]Sinais falsos aumentam significativamente[/yellow]")
-                    console.print("  [red]❌[/red] [yellow]Maior probabilidade de Stop Loss[/yellow]")
-                    console.print("  [red]❌[/red] [yellow]Spread e latência afetam mais o resultado[/yellow]\n")
-                    
-                    console.print("[bold white]Timeframes recomendados:[/bold white]\n")
-                    console.print("  [green]✓[/green] [bold bright_green]M5 (5 min)[/bold bright_green]  - [bright_cyan]IDEAL[/bright_cyan] → Equilíbrio perfeito entre frequência e precisão")
-                    console.print("  [green]✓[/green] [bold green]M15 (15 min)[/bold green] - [cyan]BOM[/cyan] → Menos sinais, mas mais confiáveis")
-                    console.print("  [green]✓[/green] [bold green]M30 (30 min)[/bold green] - [cyan]BOM[/cyan] → Sinais raros, alta qualidade\n")
-                    
-                    console.print("[bold bright_cyan]🎯 O BOT FOI PROJETADO E OTIMIZADO PARA M5[/bold bright_cyan]\n")
-                    
-                    console.print("[bold white]💡 Regra de Ouro do Trading:[/bold white]")
-                    console.print("   [bright_yellow]\"Atingiu a meta do dia? SAIA DO MERCADO!\"[/bright_yellow]")
-                    console.print("   [dim]Não fique operando o dia todo. Consistência > Volume[/dim]\n")
-                    
-                    console.print("="*70)
-                    console.print("[bold red]OPERAR EM M1 É POR SUA CONTA E RISCO[/bold red]")
-                    console.print("="*70 + "\n")
-                    
-                    escolha = IntPrompt.ask(
-                        "[bold]Deseja continuar mesmo assim?[/bold]\n   [1] Sim, aceito os riscos do M1\n   [2] Não, quero escolher outro timeframe",
-                        choices=["1", "2"],
-                        default=2
-                    )
-                    
-                    if escolha == 2:
-                        console.print("\n[green]✓ Decisão sábia! Escolha um timeframe mais adequado:[/green]\n")
-                        continue  # Volta para escolher outro timeframe
-                    else:
-                        console.print("\n[yellow]⚠️  Você escolheu prosseguir com M1. Boa sorte![/yellow]")
-                        console.print("[dim]Lembre-se: Discipline > Emoção | Stop Loss é seu amigo[/dim]\n")
-                        break
-                else:
-                    # Timeframe válido (M5, M15, M30, etc)
+                if not input_key:
+                    should_configure = False
+                    use_ai = "n"
                     break
+                    
+                input_key = input_key.strip()
+                
+                input_key = input_key.strip()
+                
+                console.print(Padding("\n[dim]Validando chave... aguarde[/dim]", (0,0), style="on black", expand=True))
+                try:
+                    # Validar chave antes de salvar
+                    temp_analyzer = AIAnalyzer(input_key, provider=current_provider)
+                    is_valid, msg = temp_analyzer.check_connection()
+                    
+                    if is_valid:
+                        current_key = input_key
+                        # Salvar no arquivo .env
+                        try:
+                            with open(".env", "a") as f:
+                                f.write(f"\nAI_PROVIDER={current_provider}\nAI_API_KEY={current_key}\n")
+                            os.environ["AI_PROVIDER"] = current_provider
+                            os.environ["AI_API_KEY"] = current_key
+                            console.print(Padding(f"[green]✓ Chave válida ({msg})! Configuração salva.[/green]\n", (0,0), style="on black", expand=True))
+                            use_ai = "s"
+                            break
+                        except:
+                            console.print(Padding("[red]Erro ao salvar .env (usando apenas nesta sessão)[/red]", (0,0), style="on black", expand=True))
+                            use_ai = "s"
+                            break
+                    else:
+                        console.print(Padding(f"[bold red]❌ CHAVE INVÁLIDA: {msg}[/bold red]", (0,0), style="on black", expand=True))
+                        if Prompt.ask("Deseja tentar novamente?", choices=["s", "n"], default="s") == "n":
+                            should_configure = False
+                            use_ai = "n"
+                            break
+                except Exception as e:
+                    console.print(Padding(f"[red]Erro na validação: {e}[/red]", (0,0), style="on black", expand=True))
+                    if Prompt.ask("Deseja tentar novamente?", choices=["s", "n"], default="s") == "n":
+                        use_ai = "n"
+                        break
+
+        if use_ai == "s" and current_key:
+            try:
+                with Progress(
+                    SpinnerColumn("dots", style="bright_magenta"),
+                    TextColumn("[bright_magenta]{task.description}"),
+                    transient=True
+                ) as progress:
+                    task = progress.add_task(f"[bright_magenta]Conectando ao {current_provider.upper()}...", total=None)
+                    ai_analyzer = AIAnalyzer(current_key, provider=current_provider)
+                    time.sleep(1.5)
+                
+                console.print(Padding("[bright_green]✓ IA inicializada com sucesso![/bright_green]", (0,0), style="on black", expand=True))
+                console.print(Padding(f"  [dim]Modelo: {ai_analyzer.model} | Status: Online[/dim]", (0,0), style="on black", expand=True))
+            except Exception as e:
+                console.print(Padding(f"\n[red]Erro ao conectar IA: {e}[/red]\n", (0,0), style="on black", expand=True))
+                ai_analyzer = None
+                console.print(Padding(f"[bright_red]  ✗ Falha ao inicializar IA: {e}[/bright_red]", (0,0), style="on black", expand=True))
+                console.print(Padding("[bright_cyan]  ⚠️  Continuando sem validação de IA...[/bright_cyan]\n", (0,0), style="on black", expand=True))
+        else:
+            console.print(Padding("[dim]IA desativada para esta sessão.[/dim]\n", (0,0), style="on black", expand=True))
+
+        # === MENU LOOP ===
+        while True:
+            print_panel(console, title_panel("MENU PRINCIPAL", border_style="white"))
+
+            print_panel(
+                console,
+                menu_table(
+                    "Escolha uma Ação",
+                    [
+                        ("1", "Iniciar Operações (Live Trading)", "Operar em tempo real (OTC)"),
+                        ("2", "Simulador (Backtest)", "Testar estratégias com dados históricos"),
+                        ("3", "Sair", "Encerrar com segurança"),
+                    ],
+                    border_style="bright_cyan",
+                ),
+            )
             
-            console.print("\n[bold]3. Meta de Lucro Diária[/bold]")
-            console.print("   [dim]O robô para automaticamente ao atingir este valor (R$)[/dim]")
-            cfg.profit_goal = FloatPrompt.ask("   Meta", default=100.0)
+            mode = IntPrompt.ask("Opção", choices=["1", "2", "3"], default=1)
             
-            console.print("\n[bold]4. Stop Loss (Limite de Perda)[/bold]")
-            console.print("   [dim]O robô para automaticamente ao atingir este prejuízo (R$)[/dim]")
-            cfg.stop_loss = FloatPrompt.ask("   Stop Loss", default=50.0)
+            if mode == 3: break
             
-            console.print("\n[bold]5. Níveis de Martingale (Gales)[/bold]")
-            console.print("   [dim]Quantas tentativas de recuperação após perda[/dim]")
-            console.print("   [dim]Cada gale multiplica a entrada por 2.2x[/dim]")
-            console.print("   [yellow]⚠️  Mais gales = maior risco[/yellow]")
-            cfg.martingale_levels = IntPrompt.ask("   Gales", default=2)
-            
-            cfg.strategy_name = strategy.name
-            cfg.stop_win = cfg.profit_goal  # Auto-sync
-            
-            console.print("\n" + "="*70)
-            console.print("[bold green]✓ Configurações salvas![/bold green]")
-            console.print("="*70 + "\n")
-            
-            # Memory Link
-            mem = TradingMemory()
-            if ai_analyzer: ai_analyzer.set_memory(mem)
-            
-            run_trading_session(api, strategy, pairs, cfg, mem, ai_analyzer)
-            
-        elif mode == 2: # BACKTEST
-            pairs = select_pairs(api)
-            tf = IntPrompt.ask("Timeframe", default=1)
-            
-            console.print("[yellow]Rodando Backtest...[/yellow]")
-            # Test all strategies
-            strats = [
-                FerreiraStrategy(api), PriceActionStrategy(api), 
-                LogicaPrecoStrategy(api), AnaTavaresStrategy(api),
-                ConservadorStrategy(api), AlavancagemStrategy(api),
-                AlavancagemSRStrategy(api)
-            ]
-            bt = Backtester(api)
-            res = bt.run_backtest(pairs, strats, tf, 100)
-            bt.display_results(res, strats)
-            input("\nEnter para voltar...")
+            if mode == 1: # LIVE TRADING
+                from rich.table import Table
+
+                strategies_table = Table(box=box.DOUBLE, expand=True, show_lines=True)
+                strategies_table.style = "on black"
+                strategies_table.add_column("#", justify="right", style="dim", width=4)
+                strategies_table.add_column("Estratégia", style="bold white")
+                strategies_table.add_column("Perfil", style="bright_cyan", width=16)
+                strategies_table.add_column("Resumo", style="dim")
+
+                strategies_table.add_row(
+                    "1",
+                    "🎯 FERREIRA TRADER",
+                    "CONSERVADOR",
+                    "Tendência + canais | WR: 65-70% | Sinais: Médio | Risco: ●●○○○",
+                )
+                strategies_table.add_row(
+                    "2",
+                    "🔄 PRICE ACTION REVERSAL",
+                    "CONSERVADOR",
+                    "Reversão em liquidez/SR | WR: 68-72% | Sinais: Baixo | Risco: ●○○○○",
+                )
+                strategies_table.add_row(
+                    "3",
+                    "📊 LÓGICA DO PREÇO",
+                    "MODERADO",
+                    "Candlestick | WR: 62-68% | Sinais: Alto | Risco: ●●●○○",
+                )
+                strategies_table.add_row(
+                    "4",
+                    "⚡ ANA TAVARES RETRACTION",
+                    "MODERADO",
+                    "Tendência + retração | WR: 65-70% | Sinais: Médio | Risco: ●●●○○",
+                )
+                strategies_table.add_row(
+                    "5",
+                    "🛡️ CONSERVADOR HIGH PRECISION",
+                    "MODERADO",
+                    "Ultra seletivo | WR: 75-80% | Sinais: Muito baixo | Risco: ●○○○○",
+                )
+                strategies_table.add_row(
+                    "6",
+                    "🧨 ALAVANCAGEM LTA/LTB",
+                    "AGRESSIVO",
+                    "Tendência + S/R | WR: 60-68% | Sinais: Alto | Risco: ●●●●○",
+                )
+
+                print_panel(console, title_panel("CENTRAL DE ESTRATÉGIAS", "Escolha seu perfil", border_style="bright_cyan"))
+
+                strat_content = Group(
+                    Text("Conservador • Moderado • Agressivo", style="dim"),
+                    strategies_table,
+                )
+                print_panel(console, section("Estratégias Disponíveis", strat_content, border_style="bright_cyan"))
+                
+                sc = IntPrompt.ask("[bright_white]Selecione a Estratégia (1-6)[/bright_white]", choices=["1","2","3","4","5","6"])
+                
+                # Warning Risk
+                if sc == 6:
+                    risk_rows = [
+                        ("Stakes", "[bold bright_magenta]Progressivos[/] (2% → 5% → 10% → 20%)"),
+                        ("Gestão", "[bold]Agressiva[/] (até 20% da banca em 1 trade)"),
+                        ("Risco", "[bold bright_red]Ruína elevada[/] em sequência de perdas"),
+                        ("Ideal", "[dim]Traders experientes • Conta teste • Capital de risco[/]"),
+                    ]
+                    print_panel(console, info_kv(
+                        "⚠️ Aviso de Risco Elevado",
+                        risk_rows,
+                        border_style="bright_red",
+                    ))
+                    if IntPrompt.ask("Aceitar risco? [1=Sim, 2=Não]", choices=["1", "2"], default=2) == 2:
+                        console.print("[green]Decisão prudente! Retornando ao menu...[/green]", style="on black")
+                        continue
+                
+                
+                # Estratégia 6: escolher perfil de filtros/sinais
+                if sc == 6:
+                    print_panel(console, title_panel("ESTRATÉGIA 6 • MODO DE OPERAÇÃO", border_style="bright_red"))
+
+                    print_panel(
+                        console,
+                        menu_table(
+                            "Modo de Operação",
+                            [
+                                ("1", "Normal (Seletivo)", "Mais filtros • Menos sinais"),
+                                ("2", "Flexível (Mais sinais)", "Menos filtros • Mais oportunidades"),
+                                ("3", "Pitbull Bravo (Ultra agressivo)", "Máximo volume • Alto risco"),
+                            ],
+                            border_style="bright_red",
+                        ),
+                    )
+                    mode_choice = IntPrompt.ask("Opção", choices=["1", "2", "3"], default=1)
+                    
+                    if mode_choice == 3:
+                        cfg.alavancagem_mode = "PITBULL"
+                    elif mode_choice == 2:
+                        cfg.alavancagem_mode = "FLEX"
+                    else:
+                        cfg.alavancagem_mode = "NORMAL"
+
+                    strategy = AlavancagemStrategy(api, ai_analyzer, mode=cfg.alavancagem_mode)
+                else:
+                    strategy = get_strategy(sc, api, ai_analyzer)
+                print_panel(console, title_panel("RESUMO DA SELEÇÃO", border_style="white"))
+                summary_rows = [("Estratégia", f"[cyan]{strategy.name}[/cyan]")]
+                if sc == 6:
+                    summary_rows.append(("Modo", f"{getattr(cfg, 'alavancagem_mode', '—')}"))
+                print_panel(console, info_kv("Seleção", summary_rows, border_style="bright_cyan"))
+                
+                pairs = select_pairs(api)
+                
+                # Parametros
+                print_panel(console, title_panel("CONFIGURAÇÃO DE PARÂMETROS", border_style="bright_magenta"))
+                console.print(Padding("[dim]  Defina entrada, timeframe e gerenciamento.[/dim]", (0,0), style="on black", expand=True))
+                
+                console.print("\n[bold]1. Valor da Entrada Inicial[/bold]", style="on black")
+                console.print(Padding("   [dim]Valor investido no primeiro trade (R$)[/dim]", (0,0), style="on black", expand=True))
+                cfg.amount = FloatPrompt.ask("   Valor", default=10.0)
+
+                console.print("\n[bold white]1. TIPO DE OPÇÃO[/]", style="on black") # Subtitulo simples
+                
+                op_menu = Group(
+                    Text("  [1] ⚡ Binárias (Expiração fixa)"),
+                    Text("  [2] 📈 Digitais (Payout variável)"),
+                    Text("  [3] 🤖 Melhor Payout (Auto)")
+                )
+                console.print(Padding(op_menu, (0,0), style="on black", expand=True))
+                op_type = IntPrompt.ask("   Opção", choices=["1", "2", "3"], default=3)
+                
+                if op_type == 1: cfg.option_type = "BINARY"
+                elif op_type == 2: cfg.option_type = "DIGITAL"
+                else: cfg.option_type = "BEST"
+                
+                console.print("\n[bold]2. Timeframe (Período de Análise)[/bold]", style="on black")
+                console.print("   [dim]1 = M1 (1 min) | 5 = M5 (5 min) | 15 = M15 (15 min) | 30 = M30 (30 min)[/dim]", style="on black")
+                console.print("   [bright_green]✨ Recomendado: M5 (melhor relação sinal/ruído)[/bright_green]", style="on black")
+                
+                while True:
+                    cfg.timeframe = IntPrompt.ask("   Timeframe", default=5)
+                    
+                    # AVISO CRÍTICO PARA M1
+                    if cfg.timeframe == 1:
+                        warn_rows = [
+                            ("Ruído", "[dim]Movimentos aleatórios e entradas falsas[/]"),
+                            ("Latência", "[dim]Spread e atraso impactam mais o resultado[/]"),
+                            ("Recomendado", "[bold bright_cyan]M5[/] • M15 • M30"),
+                            ("Nota", "[bold bright_red]M1 é por sua conta e risco[/]"),
+                        ]
+                        print_panel(console, info_kv(
+                            "⚠️ Aviso Importante (M1)",
+                            warn_rows,
+                            border_style="bright_magenta",
+                        ))
+                        
+                        escolha = IntPrompt.ask(
+                            "[bold]Deseja continuar mesmo assim?[/bold]\n   [1] Sim, aceito os riscos do M1\n   [2] Não, quero escolher outro timeframe",
+                            choices=["1", "2"],
+                            default=2
+                        )
+                        
+                        if escolha == 2:
+                            console.print("\n[green]✓ Decisão sábia! Escolha um timeframe mais adequado:[/green]\n", style="on black")
+                            continue  # Volta para escolher outro timeframe
+                        else:
+                            console.print("\n[yellow]⚠️  Você escolheu prosseguir com M1. Boa sorte![/yellow]", style="on black")
+                            console.print("[dim]Lembre-se: Discipline > Emoção | Stop Loss é seu amigo[/dim]\n", style="on black")
+                            break
+                    else:
+                        # Timeframe válido (M5, M15, M30, etc)
+                        break
+
+                console.print("\n[bold]2.1 OTC: Restringir Timeframe (Opcional)[/bold]", style="on black")
+                console.print("   [dim]Se ativado, o robô executa OTC apenas em M1/M5 para máxima compatibilidade.[/dim]", style="on black")
+                console.print("   [dim]Se desativado, respeita M1/M5/M15/M30 e tenta fallback só se a corretora rejeitar.[/dim]", style="on black")
+                otc_tf_mode = IntPrompt.ask("   Forçar OTC para M1/M5?", choices=["1", "2"], default=2)
+                cfg.force_otc_m1m5 = (otc_tf_mode == 1)
+
+                if cfg.force_otc_m1m5 and cfg.timeframe not in (1, 5):
+                    console.print(
+                        f"[yellow]⚠️ Forçando OTC para M1/M5: ajustando M{cfg.timeframe} → M5[/yellow]",
+                        style="on black",
+                    )
+                    cfg.timeframe = 5
+                
+                console.print("\n[bold]3. Meta de Lucro Diária[/bold]", style="on black")
+                console.print("   [dim]O robô para automaticamente ao atingir este valor (R$)[/dim]", style="on black")
+                cfg.profit_goal = FloatPrompt.ask("   Meta", default=100.0)
+                
+                console.print("\n[bold]4. Stop Loss (Limite de Perda)[/bold]", style="on black")
+                console.print("   [dim]O robô para automaticamente ao atingir este prejuízo (R$)[/dim]", style="on black")
+                cfg.stop_loss = FloatPrompt.ask("   Stop Loss", default=50.0)
+                
+                console.print("\n[bold]5. Níveis de Martingale (Gales)[/bold]", style="on black")
+                console.print("   [dim]Quantas tentativas de recuperação após perda[/dim]", style="on black")
+                console.print("   [dim]Cada gale multiplica a entrada por 2.2x[/dim]", style="on black")
+                console.print("   [bright_magenta]⚠️  Mais gales = maior risco[/bright_magenta]", style="on black")
+                cfg.martingale_levels = IntPrompt.ask("   Gales", default=2)
+                
+                cfg.strategy_name = strategy.name
+                cfg.stop_win = cfg.profit_goal  # Auto-sync
+                
+                print_panel(console, title_panel("CONFIGURAÇÃO FINALIZADA", border_style="bright_green"))
+                
+                final_config = Group(
+                    Text(f"  ✓ Estratégia: {cfg.strategy_name}", style="bright_green"),
+                    Text(f"  ✓ Timeframe: M{cfg.timeframe}", style="bright_green"),
+                    Text(f"  ✓ Tipo: {cfg.option_type}", style="bright_green"),
+                    Text(f"  ✓ OTC: {'M1/M5 (forçado)' if getattr(cfg, 'force_otc_m1m5', False) else 'Livre'}", style="bright_green")
+                )
+                console.print(Padding(final_config, (0,0), style="on black", expand=True))
+                console.rule(style="bright_green on black")
+                black_spacer(1)
+                
+                # Memory Link
+                mem = TradingMemory()
+                if ai_analyzer: ai_analyzer.set_memory(mem)
+                
+                run_trading_session(api, strategy, pairs, cfg, mem, ai_analyzer)
+                
+            elif mode == 2: # BACKTEST
+                pairs = select_pairs(api)
+                tf = IntPrompt.ask("Timeframe", default=1)
+
+                print_panel(console, menu_table(
+                    "Backtest",
+                    [("", "Rodando simulação", "Testando estratégias em dados históricos")],
+                    border_style="bright_magenta",
+                ))
+                # Test all strategies
+                strats = [
+                    FerreiraStrategy(api), PriceActionStrategy(api), 
+                    LogicaPrecoStrategy(api), AnaTavaresStrategy(api),
+                    ConservadorStrategy(api), AlavancagemStrategy(api),
+                    AlavancagemSRStrategy(api)
+                ]
+                bt = Backtester(api)
+                res = bt.run_backtest(pairs, strats, tf, 100)
+                bt.display_results(res, strats)
+                console.print("\n[dim]Pressione ENTER para voltar...[/dim]", style="on black")
+                input()
+    finally:
+        # Graceful shutdown da conexão com a corretora
+        try:
+            if 'api' in locals() and api:
+                api.close()
+                console.print("\n[dim]Conexão encerrada com segurança.[/dim]", style="on black")
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     main()

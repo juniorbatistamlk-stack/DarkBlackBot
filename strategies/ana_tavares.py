@@ -99,6 +99,17 @@ class AnaTavaresStrategy(BaseStrategy):
         if dist_open_sma < (atr * 0.2):
             return None, "Filtro: Nasceu muito perto da zona"
             
+        # 🤖 VALIDAÇÃO IA
+        if signal and self.ai_analyzer:
+            try:
+                zones = {"support": [], "resistance": []}
+                trend_data = {"trend": "NEUTRAL", "setup": "RETRACTION", "pattern": desc[:20]}
+                should_trade, confidence, ai_reason = self.validate_with_ai(signal, desc, candles, zones, trend_data, pair)
+                if not should_trade:
+                    return None, f"🤖-❌ IA bloqueou: {ai_reason[:30]}... ({confidence}%)"
+                desc = f"{desc} | 🤖✓{confidence}%"
+            except:
+                desc = f"{desc} | ⚠️ IA offline"
         return signal, desc
 
     def check_anti_trator(self, prev_candles, atr):
