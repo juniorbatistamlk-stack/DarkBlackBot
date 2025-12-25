@@ -1,6 +1,22 @@
 from .base_strategy import BaseStrategy
 from utils.indicators import calculate_ema, calculate_atr
 import threading
+# Strategy 6: Alavancagem Agressiva (Fluxo + Reversão)
+# -----------------------------------------------------------------------------
+# MODOS DE OPERAÇÃO:
+# 1. NORMAL: Equilibrio entre filtros e sinais.
+# 2. FLEXÍVEL (FLEX): 
+#    - Lógica Híbrida Inteligente:
+#      A) EM TENDÊNCIA LIMPA: Segue o fluxo agressivamente (Vela de força -> Entra).
+#      B) EM SUPORTE/RESISTÊNCIA (S/R): 
+#         - NUNCA antecipa o rompimento (não compra na cara da resistência).
+#         - NUNCA antecipa a reversão (não vende só porque tocou).
+#         - AGUARDA CONFIRMAÇÃO: Espera uma vela de força CONTRA a zona.
+#         - ENTRA A FAVOR DA REVERSÃO: Só depois que o mercado virou.
+#    - Filtros: Ajustados para filtrar ruído (+7% rigor) mas permitir fluxo rápido.
+# 3. PITBULL: Modo ultra-agressivo para alavancagem rápida (alto risco).
+# -----------------------------------------------------------------------------
+
 import time
 
 
