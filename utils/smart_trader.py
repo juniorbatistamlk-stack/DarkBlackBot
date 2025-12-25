@@ -7,6 +7,8 @@ COM VALIDAÇÃO DE IA INTEGRADA E APRENDIZADO
 import time
 from datetime import datetime
 from utils.trade_history import TradeHistory
+from utils.indicators import calculate_atr
+from utils.sr_zones import detect_swing_highs_lows, create_sr_zones, detect_trend_structure
 
 class SmartTrader:
     def __init__(self, api, strategy, pairs, memory, pair_rankings=None, ai_analyzer=None):
@@ -27,10 +29,17 @@ class SmartTrader:
         self.ai_analyzer = ai_analyzer
         self.is_trading = False  # Lock para 1 trade por vez
         self.current_trade = None
+        self.last_order_opened = False  # True apenas quando a ordem realmente abriu
         self.system_log_func = None  # Função para logs do sistema (IA/IQ)
         
         # Sistema de aprendizado
         self.trade_history = TradeHistory()
+
+        # Throttle leve para não poluir demais o painel (a análise acontece em bursts)
+        self._last_scan_log_ts = 0.0
+        self._scan_log_min_interval = 2.0
+        # Cooldown por par quando uma ordem não abre ou falha
+        self._pair_cooldown = {}
     
     def set_system_logger(self, log_func):
         """Define função para logar mensagens do sistema (IA, IQ)"""
@@ -44,17 +53,55 @@ class SmartTrader:
             pass # Evitar print direto para não quebrar UI
 
         
-    def analyze_all_pairs(self, timeframe):
+    def analyze_all_pairs(self, timeframe, exclude_pairs=None):
         """
         Analisa todos os pares e retorna o melhor sinal
+        COM TIMEOUT para evitar travamentos
         
         Returns:
             dict: {pair, signal, desc, confidence} ou None
         """
-        signals = []
+        start_time = time.time()
+        max_analysis_time = 25  # Máximo 25 segundos de análise (vela é 60s, deixa tempo para execução)
         
-        for pair in self.pairs:
-            signal, desc = self.strategy.check_signal(pair, timeframe)
+        signals = []
+        exclude = set(exclude_pairs or [])
+
+        # Excluir pares em cooldown antes da varredura
+        for pair, cooldown_candles in list(self._pair_cooldown.items()):
+            if cooldown_candles > 0:
+                exclude.add(pair)
+
+        # Logar que está varrendo todos os ativos
+        now = time.time()
+        if now - self._last_scan_log_ts >= self._scan_log_min_interval:
+            total = len(self.pairs)
+            skipped = len(exclude)
+            if skipped:
+                self._log_system(f"[AI] 🔎 Escaneando {total} ativos (M{timeframe})... (pulando {skipped})")
+            else:
+                self._log_system(f"[AI] 🔎 Escaneando {total} ativos (M{timeframe})...")
+            self._last_scan_log_ts = now
+        
+        for idx, pair in enumerate(self.pairs):
+            # TIMEOUT CHECK: se passou do tempo limite, abortar análise
+            elapsed = time.time() - start_time
+            if elapsed > max_analysis_time:
+                self._log_system(f"[AI] ⏱️ TIMEOUT de análise ({elapsed:.0f}s). Usando melhor sinal encontrado.")
+                break
+            
+            if pair in exclude:
+                continue
+            
+            # Mostrar claramente que está analisando cada par
+            self._log_system(f"[AI] 🔎 Analisando: {pair} ({idx+1}/{len(self.pairs)})")
+            
+            try:
+                signal, desc = self.strategy.check_signal(pair, timeframe)
+            except Exception as e:
+                # Se houver erro ao processar o par, continua para o próximo
+                self._log_system(f"[AI] ⚠️ Erro ao analisar {pair}: {str(e)[:30]}")
+                continue
             
             if signal:
                 # Calcular confianca baseado em:
@@ -66,7 +113,8 @@ class SmartTrader:
                 
                 # Bonus do backtest
                 backtest_rate = self.pair_rankings.get(pair, 50)
-                if backtest_rate is None: backtest_rate = 50
+                if backtest_rate is None:
+                    backtest_rate = 50
                 backtest_bonus = (backtest_rate - 50) * 0.4  # +/- 20 pontos max
                 
                 # Bonus da memoria
@@ -81,8 +129,12 @@ class SmartTrader:
                 elif "TENDENCIA" in desc.upper():
                     pattern_bonus = 5
                 
+                # Boost para fluxo a favor da tendência
+                if "FLUXO" in desc.upper() or "BREAKOUT" in desc.upper():
+                    pattern_bonus += 8
+                
                 final_confidence = base_confidence + backtest_bonus + memory_bonus + pattern_bonus
-                final_confidence = max(20, min(95, final_confidence))
+                final_confidence = max(25, min(97, final_confidence))
                 
                 signals.append({
                     "pair": pair,
@@ -92,8 +144,13 @@ class SmartTrader:
                     "confidence": final_confidence,
                     "backtest_rate": backtest_rate
                 })
+            else:
+                # Log quando a estratégia não retorna sinal (diagnóstico)
+                if desc:  # Se retornou descrição mas sem sinal (ex: "Aguardando setup")
+                    pass  # Evitar poluir o log com "aguardando" a cada segundo
         
         if not signals:
+            self._log_system("[AI] ⏳ Nenhum sinal encontrado nesta varredura")
             return None
         
         # Ordenar por confianca (maior primeiro)
@@ -110,39 +167,99 @@ class SmartTrader:
             else:
                 return None
         
-        # VALIDAÇÃO COM IA (se disponível)
-        if self.ai_analyzer:
-            # Obter contexto de aprendizado
+        # VALIDAÇÃO COM IA (se disponível) - modo agressivo: IA é consultiva
+        if self.ai_analyzer and getattr(self.ai_analyzer, 'is_enabled', lambda: True)():
             learning = self.trade_history.get_learning_summary()
-            self._log_system(f"[AI] Analisando gráfico de {best['pair']}...")
-            self._log_system(f"[AI] Histórico: {learning['total_trades']} trades | WR: {learning['win_rate']:.0f}%")
-            
-            if learning['avoid_patterns']:
-                self._log_system(f"[AI] ⚠️ Evitando: {', '.join(learning['avoid_patterns'][:3])}")
-            
-            candles = self.api.get_candles(best["pair"], 1, 30)
-            zones = []  # Zonas S/R
-            trend = "UPTREND" if best.get("trend") == "BULLISH" else "DOWNTREND"
-            
-            # Chamar IA para validar
-            ai_confirm, ai_confidence, ai_reason = self.ai_analyzer.analyze_signal(
-                best["signal"], best["desc"], candles, zones, trend, best["pair"]
-            )
-            
-            if not ai_confirm:
-                self._log_system(f"[AI] ❌ Rejeitado: {ai_reason}")
-                # IA rejeitou - tentar próximo sinal
-                if len(signals) > 1:
-                    best = signals[1]
-                    best["ai_rejected"] = True
-                    best["ai_reason"] = ai_reason
+            self._log_system(f"[AI] 🧠 IA ativa: validando entradas (M{timeframe})")
+            self._log_system(f"[AI] Histórico: {learning.get('total_trades', 0)} trades | WR: {learning.get('win_rate', 0):.0f}%")
+
+            if learning.get('avoid_patterns'):
+                ap = learning.get('avoid_patterns') or []
+                if ap:
+                    self._log_system(f"[AI] ⚠️ Evitando: {', '.join(ap[:3])}")
+
+            # Tenta validar o melhor sinal e, se rejeitar, percorre os próximos
+            for candidate in signals:
+                # TIMEOUT CHECK na validação IA também
+                elapsed = time.time() - start_time
+                if elapsed > max_analysis_time:
+                    self._log_system(f"[AI] ⏱️ TIMEOUT na validação IA. Executando melhor sinal.")
+                    return best
+                
+                pair = candidate["pair"]
+                self._log_system(f"[AI] Analisando gráfico de {pair}...")
+
+                candles = self.api.get_candles(pair, int(timeframe), 60)
+                if not candles or len(candles) < 30:
+                    continue
+
+                # Zonas S/R: preferir cache da estratégia (quando existir), senão detectar por swings
+                zones = []
+                if hasattr(self.strategy, 'sr_zones') and isinstance(getattr(self.strategy, 'sr_zones'), dict):
+                    cached = self.strategy.sr_zones.get(pair)
+                    if cached:
+                        zones = cached
+                if not zones:
+                    atr = calculate_atr(candles[:-1], 14) or 0.0001
+                    swings = detect_swing_highs_lows(candles[:-1], window=5)
+                    zones = create_sr_zones(swings, tolerance=atr * 0.5, max_zones=5)
+
+                struct = detect_trend_structure(candles[:-1])
+                if struct == 'BULLISH':
+                    trend = 'UPTREND'
+                elif struct == 'BEARISH':
+                    trend = 'DOWNTREND'
                 else:
-                    return None  # Sem sinais válidos
+                    trend = 'LATERAL'
+
+                # Obter contexto estruturado da estratégia (se disponível)
+                ai_ctx = {}
+                if hasattr(self.strategy, 'get_last_ai_context'):
+                    ai_ctx = self.strategy.get_last_ai_context()
+
+                ai_confirm, ai_confidence, ai_reason = self.ai_analyzer.analyze_signal(
+                    candidate["signal"], candidate["desc"], candles, zones, trend, pair, ai_context=ai_ctx
+                )
+
+                # Em modo agressivo, aceitar sinais fortes a favor da tendência mesmo com dúvida da IA
+                trend_ok = (candidate.get("signal") == "CALL" and trend == "UPTREND") or (candidate.get("signal") == "PUT" and trend == "DOWNTREND")
+                sr_ok = candidate.get("desc", "").upper().startswith("🔄 REVERSÃO") or candidate.get("desc", "").upper().startswith("📈") or candidate.get("desc", "").upper().startswith("📉")
+                strong_candidate = trend_ok and sr_ok
+
+                if ai_confirm or strong_candidate:
+                    self._log_system(f"[AI] ✅ Confirmado ({ai_confidence}%): {ai_reason}")
+                    candidate["confidence"] = (candidate["confidence"] + ai_confidence) / 2
+                    candidate["ai_reason"] = ai_reason
+                    best = candidate
+                    break
+                else:
+                    self._log_system(f"[AI] ❌ Rejeitado: {ai_reason}")
+                    candidate["ai_rejected"] = True
+                    candidate["ai_reason"] = ai_reason
             else:
-                self._log_system(f"[AI] ✅ Confirmado ({ai_confidence}%): {ai_reason}")
-                # IA confirmou - usar confiança da IA
-                best["confidence"] = (best["confidence"] + ai_confidence) / 2
-                best["ai_reason"] = ai_reason
+                # Se a IA rejeitar tudo, não travar o bot em modo agressivo.
+                # Fallback: permitir apenas entradas A FAVOR da tendência (sem contra-tendência).
+                fallback = None
+                for c in signals:
+                    desc_txt = str(c.get("desc", ""))
+                    if "CONTRA-TEND" in desc_txt.upper():
+                        continue
+                    fallback = c
+                    break
+
+                if fallback:
+                    reason = str(fallback.get("ai_reason") or "IA rejeitou os setups")
+                    fallback = dict(fallback)
+                    # Evitar colchetes: Rich markup pode interpretar como tag e bagunçar cores/colunas.
+                    fallback["desc"] = f"{fallback.get('desc','')} | AI_OVERRIDE: {reason}"
+                    self._log_system("[AI] ⚠️ IA rejeitou todos. Executando fallback a favor da tendência.")
+                    return fallback
+                return None
+        elif self.ai_analyzer:
+            # IA existe mas foi desabilitada (ex: chave inválida)
+            reason = getattr(self.ai_analyzer, 'disabled_reason', None)
+            if reason:
+                self._log_system(f"[AI] ⚠️ IA desabilitada: {reason}")
         
         return best
     
@@ -162,6 +279,7 @@ class SmartTrader:
         try:
             # Reset lock no início para evitar travamento
             self.is_trading = False
+            self.last_order_opened = False
             
             # VERIFICAR CONEXÃO ANTES DE EXECUTAR
             self._log_system("[IQ] 🔍 Verificando saúde da conexão...")
@@ -184,13 +302,53 @@ class SmartTrader:
             log_func(f"[green]💰 Executando ordem [{cfg.option_type}]: {signal} em {pair} (R${cfg.amount:.2f})[/green]")
             
             try:
-                # Executar trade
-                self._log_system(f"[IQ] Tentando: {pair} {signal}...")
-                check, order_id = self.api.buy(cfg.amount, pair, signal, cfg.timeframe)
-                
-                self._log_system(f"[IQ] Resposta: check={check}, id={order_id}")
+                def _should_retry_open(reason: str) -> bool:
+                    r = str(reason).lower()
+                    # retry apenas em falhas transitórias (latência/conexão/rejeição momentânea)
+                    transient_keys = (
+                        "timeout",
+                        "socket",
+                        "closed",
+                        "try",
+                        "tempor",
+                        "reconnect",
+                        "not found",
+                        "rejected",
+                        "no such",
+                        "unknown",
+                    )
+                    non_retry_keys = (
+                        "asset",
+                        "closed asset",
+                        "market closed",
+                        "not opened",
+                        "insufficient",
+                        "saldo",
+                        "limit",
+                        "min",
+                        "max",
+                    )
+                    if any(k in r for k in non_retry_keys):
+                        return False
+                    return any(k in r for k in transient_keys)
+
+                # Executar trade com pequenas tentativas (evita perder entrada por rejeição momentânea)
+                max_open_attempts = 3
+                check, order_id = False, ""
+                for attempt in range(1, max_open_attempts + 1):
+                    self._log_system(f"[IQ] Tentando ({attempt}/{max_open_attempts}): {pair} {signal}...")
+                    check, order_id = self.api.buy(cfg.amount, pair, signal, cfg.timeframe)
+                    self._log_system(f"[IQ] Resposta: check={check}, id={order_id}")
+                    if check:
+                        break
+                    if attempt < max_open_attempts and _should_retry_open(order_id):
+                        # pequeno delay para não bater rate-limit e permitir reconexão
+                        time.sleep(0.6)
+                        continue
+                    break
                 
                 if check:
+                    self.last_order_opened = True
                     log_func(f"[green]✓ Ordem {order_id} aberta em {pair}. Aguardando resultado...[/green]")
                     
                     # Aguardar resultado
@@ -223,6 +381,7 @@ class SmartTrader:
                         log_func(f"[yellow]🤝 EMPATE | {pair}[/yellow]")
                         return 0
                 else:
+                    self.last_order_opened = False
                     log_func(f"[bold red]❌ FALHA AO ABRIR ORDEM[/bold red]")
                     log_func(f"[red]Motivo: {order_id}[/red]")
                     
@@ -234,15 +393,19 @@ class SmartTrader:
                         log_func(f"[yellow]⏱️ Timeout: Operação demorou muito. Tente novamente.[/yellow]")
                     else:
                         log_func(f"[yellow]Verifique: Saldo, Ativo aberto, Limite de trades[/yellow]")
+                    # Adiciona cooldown de 2 velas para este par
+                    self._pair_cooldown[pair] = max(self._pair_cooldown.get(pair, 0), 2)
                     
                     return 0
                     
             except ConnectionError as e:
+                self.last_order_opened = False
                 log_func(f"[bold red]❌ ERRO DE CONEXÃO: {str(e)}[/bold red]")
                 log_func(f"[yellow]🔄 Tentando reconectar...[/yellow]")
                 self.api._ensure_connected()
                 return 0
             except Exception as e:
+                self.last_order_opened = False
                 log_func(f"[bold red]❌ ERRO CRÍTICO: {str(e)}[/bold red]")
                 import traceback
                 error_trace = traceback.format_exc()
@@ -275,7 +438,7 @@ class SmartTrader:
             # Se perdeu a entrada (delay > 4s), esperar a proxima vela cheia.
             
             candle_duration = cfg.timeframe * 60
-            server_time = self.api.api.get_server_timestamp()
+            server_time = self.api.get_server_timestamp()
             
             # Normalizar para tempo decorrido na vela atual
             # Ex: 10:05:02 -> elapsed = 2
@@ -293,8 +456,9 @@ class SmartTrader:
                 
                 # Loop de espera preciso (Server Side)
                 target_timestamp = server_time + wait_time
+                message_shown = False
                 while True:
-                    now = self.api.api.get_server_timestamp()
+                    now = self.api.get_server_timestamp()
                     rem = target_timestamp - now
                     if rem <= 0:
                         break

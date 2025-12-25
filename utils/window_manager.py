@@ -51,12 +51,23 @@ def set_console_icon(icon_path):
         )
 
         if h_icon:
-            # Set small icon (Title bar)
+            # Set small icon (Title bar) - 16x16
             user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, h_icon)
-            # Set big icon (Taskbar / Alt-Tab)
+            # Set big icon (Taskbar / Alt-Tab) - 32x32
             user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, h_icon)
             
-    except Exception:
+            # Also try to set the class icon for better compatibility
+            try:
+                GCL_HICON = -14
+                GCL_HICONSM = -34
+                user32.SetClassLongPtrW(hwnd, GCL_HICON, h_icon)
+                user32.SetClassLongPtrW(hwnd, GCL_HICONSM, h_icon)
+            except:
+                pass
+            
+    except Exception as e:
+        # Debug: uncomment to see errors
+        # print(f"Icon error: {e}")
         pass # Fail silently to not impact main bot execution
 
 def set_console_title(title):

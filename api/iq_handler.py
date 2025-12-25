@@ -10,6 +10,16 @@ class IQHandler:
         self.last_error = None
         self._lock = threading.Lock()
         self._logger = None  # Callback para logs
+        self._hb_thread = None
+        self._hb_stop = threading.Event()
+
+        # Evita acumular threads de candles quando a IQ trava/hanga.
+        # Mantém no máximo 1 fetch ativo por par.
+        self._candles_inflight = set()
+        self._candles_inflight_lock = threading.Lock()
+
+        # Throttle logs to avoid flooding the dashboard (and causing flicker)
+        self._last_log_ts = {}
         
     def set_logger(self, log_func):
         """Define callback para enviar logs ao dashboard"""
@@ -22,140 +32,394 @@ class IQHandler:
         else:
             print(msg)
 
+    def _log_throttled(self, key: str, msg: str, interval_s: float = 6.0) -> None:
+        """Loga no máximo 1x por intervalo para a mesma chave."""
+        now = time.time()
+        last = self._last_log_ts.get(key, 0.0)
+        if now - last >= interval_s:
+            self._last_log_ts[key] = now
+            self._log(msg)
+
     def connect(self):
-        """Connects to IQ Option API with retry mechanism."""
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                self.api = IQ_Option(self.config.email, self.config.password)
-                check, reason = self.api.connect()
-                
-                if check:
-                    self.api.change_balance(self.config.account_type)
-                    return True
-                else:
+        """Connects to IQ Option API with retry + heartbeat."""
+        with self._lock:
+            max_retries = 4
+            for attempt in range(max_retries):
+                try:
+                    # Garante que conexões anteriores foram encerradas
+                    if self.api:
+                        try:
+                            self.api.close_connect()
+                        except Exception:
+                            pass
+                        self.api = None
+
+                    self.api = IQ_Option(self.config.email, self.config.password)
+                    if self.api is None:
+                        self.last_error = "IQ_Option returned None"
+                        self._log_throttled(
+                            "iq_api_none",
+                            f"[IQ_HANDLER] Erro: instância API vazia (tentativa {attempt+1}/{max_retries})",
+                            interval_s=4.0,
+                        )
+                        time.sleep(2)
+                        continue
+
+                    check, reason = self.api.connect()
+
+                    if check:
+                        try:
+                            self.api.change_balance(self.config.account_type)
+                        except Exception as e:
+                            self.last_error = f"change_balance falhou: {e}"
+                            self._log_throttled(
+                                "change_balance_fail",
+                                f"[IQ_HANDLER] ⚠️ change_balance falhou: {e}",
+                                interval_s=4.0,
+                            )
+                            time.sleep(2)
+                            continue
+
+                        self._start_heartbeat()
+                        return True
+
                     self.last_error = f"Connection failed: {reason}"
-                    self._log(f"[IQ_HANDLER] Tentativa {attempt+1}/{max_retries} falhou: {reason}")
-            except Exception as e:
-                self.last_error = str(e)
-                self._log(f"[IQ_HANDLER] Erro na conexão (Tentativa {attempt+1}/{max_retries}): {e}")
-            
-            time.sleep(2)
-            
-        return False
+                    reason_txt = str(reason)
+                    if "websocket" in reason_txt.lower() and "closed" in reason_txt.lower():
+                        self._log_throttled(
+                            "ws_closed_connect",
+                            f"[IQ_HANDLER] ⚠️ Falha: {reason_txt}",
+                            interval_s=10.0,
+                        )
+                        time.sleep(5 * (attempt + 1))
+                        continue
+
+                    self._log_throttled(
+                        "connect_fail",
+                        f"[IQ_HANDLER] Tentativa {attempt+1}/{max_retries} falhou: {reason_txt}",
+                        interval_s=6.0,
+                    )
+                    time.sleep(2)
+                except Exception as e:
+                    self.last_error = str(e)
+                    self._log_throttled(
+                        "connect_exception",
+                        f"[IQ_HANDLER] Erro na conexão (Tentativa {attempt+1}/{max_retries}): {e}",
+                        interval_s=6.0,
+                    )
+                    time.sleep(2)
+
+            return False
+
+    def _start_heartbeat(self):
+        """Inicia um heartbeat que mantém a WS viva e auto-reconecta."""
+        # Pare qualquer thread anterior
+        try:
+            self._hb_stop.set()
+        except:
+            pass
+        self._hb_stop = threading.Event()
+
+        def _loop():
+            while not self._hb_stop.is_set():
+                try:
+                    # Ping a cada 15s
+                    for _ in range(15):
+                        if self._hb_stop.is_set():
+                            return
+                        time.sleep(1)
+
+                    if not self.api:
+                        continue
+
+                    ok = False
+                    try:
+                        ok = self.api.check_connect()
+                    except Exception:
+                        ok = False
+
+                    if not ok:
+                        self._log("[IQ_HANDLER] 🧪 Heartbeat detectou desconexão. Re-conectando...")
+                        self._ensure_connected()
+                        continue
+
+                    # Toca endpoints leves para manter sessão
+                    try:
+                        _ = self.api.get_balance()
+                    except Exception:
+                        self._ensure_connected()
+                except Exception as e:
+                    # Não derruba o loop por exceções transitórias
+                    self._log(f"[IQ_HANDLER] Heartbeat erro: {str(e)[:60]}")
+
+        self._hb_thread = threading.Thread(target=_loop, daemon=True)
+        self._hb_thread.start()
 
     def _ensure_connected(self):
         """Auto-reconnect if connection dropped with smart retry."""
         max_attempts = 3  # Reduced to 3 for faster failure
-        
-        for attempt in range(max_attempts):
-            try:
-                # Check if API exists and is connected
-                if self.api and self.api.check_connect():
-                    # Verify WebSocket is truly alive by getting balance
+
+        # Serializa reconexões (heartbeat + candles + buy podem chamar juntos)
+        with self._lock:
+            for attempt in range(max_attempts):
+                try:
+                    # Check if API exists and is connected
+                    if self.api:
+                        try:
+                            if self.api.check_connect():
+                                # Verify WebSocket is truly alive by getting balance
+                                try:
+                                    _ = self.api.get_balance()
+                                    return True  # Connection is good
+                                except Exception:
+                                    pass  # WebSocket dead, need reconnect
+                        except Exception as e:
+                            msg = str(e).lower()
+                            if "already closed" in msg or "connection is already closed" in msg:
+                                self._log_throttled(
+                                    "already_closed_session",
+                                    "[IQ_HANDLER] ℹ️ Sessão já estava fechada. Recriando conexão...",
+                                    interval_s=10.0,
+                                )
+                            # Garantir reset do handler para recriar a sessão limpa
+                            self.api = None
+
+                    # Connection is dead - create fresh API instance
+                    self._log_throttled(
+                        "reconnecting",
+                        f"[IQ_HANDLER] 🔄 Reconectando... (tentativa {attempt+1}/{max_attempts})",
+                        interval_s=6.0,
+                    )
+
+                    # Destroy old connection completely
+                    if self.api:
+                        try:
+                            self.api.close_connect()
+                        except Exception:
+                            pass
+                        self.api = None
+
+                    # Exponential backoff: 5s, 10s, 15s, ...
+                    wait_time = 5 * (attempt + 1)
+                    self._log_throttled(
+                        "reconnect_wait",
+                        f"[IQ_HANDLER] ⏳ Aguardando {wait_time}s antes de tentar...",
+                        interval_s=6.0,
+                    )
+                    time.sleep(wait_time)
+
+                    # Create fresh connection
+                    self.api = IQ_Option(self.config.email, self.config.password)
+                    if self.api is None:
+                        self._log_throttled(
+                            "iq_api_none_reconnect",
+                            "[IQ_HANDLER] ❌ Falha ao criar instância IQ_Option",
+                            interval_s=8.0,
+                        )
+                        continue
+
+                    check, reason = self.api.connect()
+                    if not check:
+                        reason_txt = str(reason)
+                        if "websocket" in reason_txt.lower() and "closed" in reason_txt.lower():
+                            self._log_throttled(
+                                "ws_closed_ensure",
+                                f"[IQ_HANDLER] ⚠️ Falha: {reason_txt}",
+                                interval_s=12.0,
+                            )
+                        else:
+                            self._log_throttled(
+                                "ensure_fail",
+                                f"[IQ_HANDLER] ⚠️ Falha: {reason_txt}",
+                                interval_s=8.0,
+                            )
+                        continue
+
                     try:
-                        _ = self.api.get_balance()
-                        return True  # Connection is good
-                    except Exception:
-                        pass  # WebSocket dead, need reconnect
-                
-                # Connection is dead - create fresh API instance
-                self._log(f"[IQ_HANDLER] 🔄 Reconectando... (tentativa {attempt+1}/{max_attempts})")
-                
-                # Destroy old connection completely
-                if self.api:
-                    try:
-                        self.api.close_connect()
-                    except:
-                        pass
-                    self.api = None
-                
-                # Exponential backoff: 5s, 10s, 15s
-                wait_time = 5 * (attempt + 1)
-                self._log(f"[IQ_HANDLER] ⏳ Aguardando {wait_time}s antes de tentar...")
-                time.sleep(wait_time)
-                
-                # Create fresh connection
-                self.api = IQ_Option(self.config.email, self.config.password)
-                check, reason = self.api.connect()
-                
-                if check:
-                    self.api.change_balance(self.config.account_type)
-                    
-                    # CRITICAL: Wait for websocket to stabilize
+                        self.api.change_balance(self.config.account_type)
+                    except Exception as e:
+                        self._log_throttled(
+                            "change_balance_fail_reconnect",
+                            f"[IQ_HANDLER] ⚠️ change_balance falhou: {e}",
+                            interval_s=8.0,
+                        )
+                        continue
+
+                    # Wait for websocket to stabilize
                     time.sleep(2)
-                    
+
                     # Verify it's really working
                     try:
-                        test_balance = self.api.get_balance()
-                        if test_balance:
-                            self._log(f"[IQ_HANDLER] ✅ Reconectado com sucesso!")
-                            return True
-                    except:
-                        self._log(f"[IQ_HANDLER] ⚠️ Conexão instável, tentando novamente...")
+                        _ = self.api.get_balance()
+                        self._log_throttled(
+                            "reconnected_ok",
+                            "[IQ_HANDLER] ✅ Reconectado com sucesso!",
+                            interval_s=4.0,
+                        )
+                        self._start_heartbeat()
+                        return True
+                    except Exception:
+                        self._log_throttled(
+                            "reconnect_unstable",
+                            "[IQ_HANDLER] ⚠️ Conexão instável, tentando novamente...",
+                            interval_s=8.0,
+                        )
+                        try:
+                            self.api = None
+                        except Exception:
+                            pass
                         continue
-                else:
-                    self._log(f"[IQ_HANDLER] ⚠️ Falha: {reason}")
-                    
-            except Exception as e:
-                self._log(f"[IQ_HANDLER] ❌ Erro tentativa {attempt+1}: {str(e)[:50]}")
-        
-        # All attempts failed
-        self._log(f"[IQ_HANDLER] 💀 FALHA CRÍTICA: Não foi possível reconectar após {max_attempts} tentativas")
-        self._log(f"[IQ_HANDLER] 🛡️ Possíveis causas: VPN instável, IQ Option bloqueou, ou internet caiu")
-        self._log(f"[IQ_HANDLER] 💡 Solução: Reinicie o bot ou troque de servidor VPN")
-        return False
+                except Exception as e:
+                    msg = str(e)
+                    msg_lower = msg.lower()
+
+                    if "already closed" in msg_lower or "connection is already closed" in msg_lower:
+                        self._log_throttled(
+                            "already_closed",
+                            f"[IQ_HANDLER] ℹ️ Conexão já fechada (tentativa {attempt+1}/{max_attempts}). Reconectando...",
+                            interval_s=10.0,
+                        )
+                    else:
+                        self._log_throttled(
+                            "ensure_exception",
+                            f"[IQ_HANDLER] ❌ Erro tentativa {attempt+1}: {msg[:80]}",
+                            interval_s=8.0,
+                        )
+
+                    try:
+                        self.api = None
+                    except Exception:
+                        pass
+
+            self._log_throttled(
+                "reconnect_critical",
+                f"[IQ_HANDLER] 💀 FALHA CRÍTICA: Não foi possível reconectar após {max_attempts} tentativas",
+                interval_s=15.0,
+            )
+            self._log_throttled(
+                "reconnect_critical_hint",
+                "[IQ_HANDLER] 💡 Solução: Reinicie o bot ou troque de servidor VPN",
+                interval_s=15.0,
+            )
+            return False
 
     def get_balance(self):
         """Returns current balance."""
         self._ensure_connected()
         return self.api.get_balance()
 
+    def get_server_timestamp(self):
+        """Returns server timestamp safely."""
+        if self._ensure_connected():
+            return self.api.get_server_timestamp()
+        return time.time()  # Fallback to local time
+        
+    def get_realtime_price(self, pair):
+        """Retorna o preço de fechamento da última vela M1 como proxy."""
+        try:
+            candles = self.get_candles(pair, 1, 1)
+            if candles:
+                return candles[-1]['close']
+        except Exception:
+            return None
+        return None
+
+    def close(self):
+        """Fecha conexões e heartbeat."""
+        try:
+            self._hb_stop.set()
+        except:
+            pass
+        try:
+            if self.api:
+                self.api.close_connect()
+        except:
+            pass
+
     def get_payout(self, pair, type_name="turbo"):
         """Gets payout percentage for a pair."""
         all_profits = self.api.get_all_profit()
         return all_profits.get(pair, {}).get(type_name, 0) * 100
 
-    def get_candles(self, pair, timeframe, amount):
-        """Fetches candle data with explicit timeout to prevent freezing."""
+    def get_candles(self, pair, timeframe, amount, timeout_s=8):
+        """Fetches candle data with bounded timeout to prevent freezing.
+        Optional timeout_s allows quicker checks (e.g., timeframe validation).
+        """
         result = []
+
+        # VERIFICAÇÃO CRUCIAL: garante conexão antes de começar
+        if not self._ensure_connected():
+            self._log_throttled(
+                f"candles_conn_fail_{pair}",
+                f"[IQ] ❌ Falha ao conectar para buscar candles de {pair}",
+                interval_s=10.0,
+            )
+            return []
+
+        # Se já existe um fetch em andamento para este par, não cria outro.
+        with self._candles_inflight_lock:
+            if pair in self._candles_inflight:
+                self._log_throttled(
+                    f"candles_inflight_{pair}",
+                    f"[IQ] ⏳ Candles ainda em andamento para {pair}. Pulando...",
+                    interval_s=6.0,
+                )
+                return []
+            self._candles_inflight.add(pair)
         
         def _fetch():
             nonlocal result
-            # Try up to 2 times
-            for attempt in range(2):
-                try:
-                    self._ensure_connected()
-                    # IQ Option API get_candles is known to hang sometimes
-                    candles = self.api.get_candles(pair, timeframe * 60, amount, time.time())
-                    if candles:
-                        result = candles
-                        return # Success
-                except Exception as e:
-                    err_msg = str(e).lower()
-                    # Catch Socket Closed, EOF (SSL), and general Connection errors
-                    if any(x in err_msg for x in ["socket", "closed", "eof", "ssl", "violation", "handshake"]):
-                        self._log(f"[IQ] 🔄 Instabilidade de Conexão ({err_msg[:20]}...). Reconectando... ({attempt+1}/2)")
-                        try:
-                            self.api.close_connect()
-                        except:
+            try:
+                # Try up to 2 times
+                for attempt in range(2):
+                    try:
+                        # Verificação extra: se self.api virou None durante a execução
+                        if self.api is None:
+                            raise ConnectionError("Conexão perdida durante fetch")
+                        
+                        # IQ Option API get_candles is known to hang sometimes
+                        candles = self.api.get_candles(pair, timeframe * 60, amount, time.time())
+                        if candles:
+                            result = candles
+                            return  # Success
+                    except Exception as e:
+                        err_msg = str(e).lower()
+                        # Catch Socket Closed, EOF (SSL), and general Connection errors
+                        if any(x in err_msg for x in ["socket", "closed", "eof", "ssl", "violation", "handshake"]):
+                            self._log_throttled(
+                                "candles_conn_instability",
+                                f"[IQ] 🔄 Instabilidade de Conexão ({err_msg[:20]}...). Reconectando... ({attempt+1}/2)",
+                                interval_s=10.0,
+                            )
+                            try:
+                                self.api.close_connect()
+                            except Exception:
+                                pass
+                            self.api = None
+                            time.sleep(1 + attempt)  # (1s, then 2s)
+                        else:
+                            self._log_throttled(
+                                "candles_error",
+                                f"[IQ] Erro download candles: {e}",
+                                interval_s=10.0,
+                            )
+                            # Mantém uma tentativa extra.
                             pass
-                        self.api = None 
-                        time.sleep(1 + attempt) # Wait a bit more on retries (1s, then 2s)
-                    else:
-                        self._log(f"[IQ] Erro download candles: {e}")
-                        # Don't break immediately, maybe momentary glitch? 
-                        # But if it's not connection related, retry might not help.
-                        # For safety, let's treat almost everything in get_candles as worth 1 retry if network related.
-                        pass # Continue loop to retry if range allows
+            finally:
+                with self._candles_inflight_lock:
+                    self._candles_inflight.discard(pair)
 
-        # Threaded fetch with 20s timeout (SSL handshakes over VPN can be slow)
-        t = threading.Thread(target=_fetch)
+        # Threaded fetch with bounded timeout to avoid stalling multi-asset scans.
+        t = threading.Thread(target=_fetch, daemon=True)
         t.start()
-        t.join(timeout=20)
+        t.join(timeout=timeout_s)
         
         if t.is_alive():
-            self._log(f"[IQ] TIMEOUT ao baixar velas de {pair} (15s)")
+            self._log_throttled(
+                "candles_timeout",
+                f"[IQ] TIMEOUT ao baixar velas de {pair} ({int(timeout_s)}s)",
+                interval_s=15.0,
+            )
             return []
             
         if not result:
@@ -173,6 +437,22 @@ class IQHandler:
 
     def buy(self, amount, pair, action, duration):
         """Executes a trade with timeout, retry, and auto-reconnect."""
+        # Normalizar duration (algumas modalidades/OTC não suportam M15/M30)
+        try:
+            duration = int(duration)
+        except Exception:
+            duration = 1
+
+        # OTC: comportamento configurável
+        # - force_otc_m1m5=True: sempre restringe execução a M1/M5
+        # - force_otc_m1m5=False: respeita timeframe do usuário e usa fallback apenas se a corretora rejeitar
+        otc_pair = isinstance(pair, str) and "OTC" in pair
+        force_otc_m1m5 = bool(getattr(self.config, "force_otc_m1m5", False))
+
+        if otc_pair and force_otc_m1m5 and duration not in (1, 5):
+            self._log(f"[IQ] ⚠️ OTC M1/M5 forçado. Ajustando M{duration} → M5 para {pair}.")
+            duration = 5
+
         # VERIFICAR CONEXÃO ANTES DE COMEÇAR
         self._log(f"[IQ] 🔍 Verificando conexão antes do trade...")
         if not self._ensure_connected():
@@ -182,6 +462,7 @@ class IQHandler:
         self._log(f"[IQ] ✓ Conexão OK. Executando trade...")
         
         max_retries = 2
+        fallback_tried = False
         
         for attempt in range(max_retries):
             result = self._buy_with_timeout(amount, pair, action, duration)
@@ -193,13 +474,40 @@ class IQHandler:
             error_msg = str(result[1]).lower()
             if "socket" in error_msg or "closed" in error_msg or "timeout" in error_msg:
                 if attempt < max_retries - 1:
-                    print(f"[IQ_HANDLER] ⚠️ Erro de conexão detectado. Tentativa {attempt+1}/{max_retries}")
-                    print(f"[IQ_HANDLER] 🔄 Reconectando...")
+                    self._log_throttled(
+                        "buy_conn_error",
+                        f"[IQ_HANDLER] ⚠️ Erro de conexão detectado. Tentativa {attempt+1}/{max_retries}",
+                        interval_s=6.0,
+                    )
+                    self._log_throttled(
+                        "buy_reconnecting",
+                        "[IQ_HANDLER] 🔄 Reconectando...",
+                        interval_s=6.0,
+                    )
                     self._ensure_connected()
                     time.sleep(2)
                     continue
             
             # Outros erros (asset closed, etc) - não adianta retry
+
+            # Fallback: se for OTC e timeframe longo, tentar M5 uma vez quando a mensagem indicar expiração/timeframe inválida
+            if (not force_otc_m1m5) and otc_pair and (duration not in (1, 5)) and (not fallback_tried):
+                msg = str(result[1]).lower()
+                duration_keys = (
+                    "expiration",
+                    "expir",
+                    "timeframe",
+                    "duration",
+                    "invalid",
+                    "not supported",
+                    "strike",
+                )
+                if any(k in msg for k in duration_keys):
+                    fallback_tried = True
+                    self._log(f"[IQ] ⚠️ Rejeição por timeframe/expiração em {pair} (M{duration}). Tentando fallback M5...")
+                    duration = 5
+                    continue
+
             break
         
         return result  # Return last failed result
@@ -407,3 +715,49 @@ class IQHandler:
                 }
         
         return results
+
+    def validate_pair_timeframes(self, pair, timeframes=(1, 5, 15, 30)):
+        """Valida se um par aceita operar nas timeframes fornecidas.
+        Retorna True somente se TODAS as timeframes retornarem candles.
+        Resiliente a desconexões, com tentativas rápidas e baixo log.
+        """
+        if not self._ensure_connected():
+            return False
+
+        for tf in timeframes:
+            ok = False
+            for attempt in range(2):  # até 2 tentativas por timeframe
+                try:
+                    # usar timeout rápido para não travar o scanner
+                    candles = self.get_candles(pair, int(tf), 3, timeout_s=3)
+                    if candles:
+                        ok = True
+                        break
+                except Exception as e:
+                    # evitar poluição de log; reconectar apenas na 1ª falha
+                    if attempt == 0:
+                        try:
+                            if self.api:
+                                self.api.close_connect()
+                        except Exception:
+                            pass
+                        self.api = None
+                        self._ensure_connected()
+                finally:
+                    time.sleep(0.2)  # anti rate-limit
+            if not ok:
+                return False
+        return True
+
+    def filter_pairs_by_timeframes(self, pairs_list, timeframes=(1, 5, 15, 30)):
+        """Filtra lista de pares mantendo apenas os que aceitam TODAS as timeframes.
+        Retorna dict {pair: {open, payout}} semelhante a scan_available_pairs, mas filtrado.
+        """
+        base = self.scan_available_pairs(pairs_list)
+        filtered = {}
+        for pair, info in base.items():
+            if not info.get("open"):
+                continue
+            if self.validate_pair_timeframes(pair, timeframes):
+                filtered[pair] = info
+        return filtered

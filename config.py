@@ -11,6 +11,10 @@ class Config:
         # Trading Settings
         self.asset = "EURUSD"
         self.timeframe = 5  # 1 for M1, 5 for M5, etc. (Default: M5 - Recommended)
+        # OTC Behavior
+        # True: restringe execução OTC para M1/M5 (compatibilidade máxima)
+        # False: respeita o timeframe escolhido (M1/M5/M15/M30) e usa fallback apenas se a corretora rejeitar
+        self.force_otc_m1m5 = False
         self.amount = 10.0
         self.martingale_levels = 2
         self.stop_win = 50.0
@@ -18,6 +22,10 @@ class Config:
         
         # Active Strategy
         self.strategy_name = "Ferreira Trader"
+        # Strategy 6 (Alavancagem) behavior
+        # NORMAL: critérios atuais
+        # FLEX: menos filtros, mais sinais (mantém respeito a S/R e fluxo)
+        self.alavancagem_mode = "NORMAL"
         
         # System
         self.check_interval = 1 # Seconds to wait in loop
