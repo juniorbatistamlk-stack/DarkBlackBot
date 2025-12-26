@@ -1,5 +1,5 @@
 # ui/dashboard.py - Dashboard Premium Profissional
-from rich.console import Console
+from rich.console import Console, Group
 from rich.layout import Layout
 from rich.panel import Panel
 from rich.table import Table
@@ -198,7 +198,7 @@ class Dashboard:
         
         return f"[{color}]{bar_filled}[/][dim]{bar_empty}[/] [{color}]{pct:.0f}%[/]"
 
-    def render(self, current_profit, time_to_close=0):
+    def render(self, current_profit, time_to_close=0, worker_status=""):
         """Renderiza o dashboard premium completo"""
         
         # ==================== TOP BAR ====================
@@ -299,10 +299,19 @@ class Dashboard:
         self.layout["right_panel"].update(strat_panel)
 
         # ==================== FOOTER LEFT: EXECUÇÃO ====================
-        log_txt = "\n".join(self.logs[-9:]) if self.logs else "[dim]Aguardando operações...[/]"
+        # Status Bar
+        status_bar = f"[bold white]STATUS:[/] [dim]{worker_status}[/]" if worker_status else ""
+        
+        log_txt = "\n".join(self.logs[-8:]) if self.logs else "[dim]Aguardando operações...[/]"
+        
+        content = Group(
+            Text.from_markup(status_bar),
+            Text("─" * 40, style="dim"),
+            Text.from_markup(log_txt)
+        )
         
         exec_panel = Panel(
-            log_txt,
+            content,
             title="[bold bright_cyan]► EXECUÇÃO[/]",
             border_style="bright_cyan",
             box=box.ROUNDED,

@@ -19,7 +19,7 @@ console = Console()
 
 # Lista completa de pares OTC
 ALL_PAIRS = [
-    "EURUSD-OTC", "GBPUSD-OTC", "USDJPY-OTC", "AUDUSD-OTC", "USDCAD-OTC", "NZDUSD-OTC", "USDCHF-OTC",
+    "EURUSD-OTC", "GBPUSD-OTC", "USDJPY-OTC", "AUDUSD-OTC", "NZDUSD-OTC", "USDCHF-OTC",
     "EURJPY-OTC", "GBPJPY-OTC", "AUDJPY-OTC", "CADJPY-OTC", "EURGBP-OTC", "EURCAD-OTC", "EURAUD-OTC", 
     "EURNZD-OTC", "GBPCAD-OTC", "GBPCHF-OTC", "GBPAUD-OTC", "GBPNZD-OTC", "AUDCAD-OTC", "AUDCHF-OTC",
     "AUDNZD-OTC", "CADCHF-OTC", "NZDJPY-OTC", "XAUUSD-OTC"
@@ -27,9 +27,15 @@ ALL_PAIRS = [
 
 TIMEFRAMES = [1, 5, 15, 30]  # M1, M5, M15, M30
 
+from dotenv import load_dotenv
+import os
+
 def test_pair_timeframes():
     """Testa cada par em cada timeframe"""
+    load_dotenv()
     cfg = Config()
+    cfg.email = os.getenv("IQ_EMAIL")
+    cfg.password = os.getenv("IQ_PASSWORD")
     # Prompt de credenciais se não estiverem configuradas
     if not cfg.email:
         cfg.email = Prompt.ask("Email da IQ Option", default="")

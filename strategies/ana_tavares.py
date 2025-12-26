@@ -4,6 +4,16 @@ from utils.indicators import calculate_sma, calculate_atr
 import time
 
 class AnaTavaresStrategy(BaseStrategy):
+    """
+    ESTRATÉGIA: Ana Tavares (Sistema de Retração)
+    
+    Lógica:
+    1. Baseada no princípio do 'Efeito Elástico' em M5.
+    2. Regra de Ouro: Pico de vela nos primeiros 50% do tempo (2m30s).
+    3. Filtro de Explosão: Vela deve esticar rápido (Pico).
+    4. Gatilho: Toque na zona SNR ou Médias Móveis com rejeição.
+    5. Anti-Trator: Evita entrar se velas anteriores foram muito pequenas (acumulação).
+    """
     def __init__(self, api_handler, ai_analyzer=None):
         super().__init__(api_handler, ai_analyzer)
         self.name = "Ana Tavares Retraction System"
@@ -12,7 +22,7 @@ class AnaTavaresStrategy(BaseStrategy):
         # Force M5 ideally, but respect user choice if they really want M1
         try:
             timeframe = int(timeframe_str)
-        except:
+        except Exception:
             timeframe = 5 
             
         lookback = 100
@@ -108,7 +118,7 @@ class AnaTavaresStrategy(BaseStrategy):
                 if not should_trade:
                     return None, f"🤖-❌ IA bloqueou: {ai_reason[:30]}... ({confidence}%)"
                 desc = f"{desc} | 🤖✓{confidence}%"
-            except:
+            except Exception:
                 desc = f"{desc} | ⚠️ IA offline"
         return signal, desc
 

@@ -25,7 +25,7 @@ print(f"✓ Conectado! Banca: ${api.get_balance()}")
 
 # Testar get_candles
 print("\n=== TESTE 1: Buscar Velas ===")
-pairs_to_test = ["EURUSD", "EURUSD-OTC", "USDCAD-OTC"]
+pairs_to_test = ["EURUSD", "EURUSD-OTC"]
 
 for pair in pairs_to_test:
     print(f"\nTestando {pair}...")

@@ -5,6 +5,18 @@ from utils.indicators import calculate_sma, calculate_atr
 import numpy as np
 
 class FerreiraStrategy(BaseStrategy):
+    """
+    ESTRATÉGIA: Ferreira (Alta Assertividade)
+    
+    Lógica:
+    1. Baseada em 'Psicologia dos Candles' e Movimento Institucional.
+    2. Identifica zonas de S/R fortes e aguarda padrões específicos:
+       - 'Comando': Vela de força sem pavio (controle total).
+       - 'Nova Alta/Baixa': Rompimento com continuidade.
+       - 'Exaustão': Vela grande que trava em zona S/R.
+    3. Analisa o 'Fluxo' (continuação) ou 'Travamento' (reversão).
+    4. Validação IA obrigatória para filtrar ruído.
+    """
     def __init__(self, api_handler, ai_analyzer=None):
         super().__init__(api_handler, ai_analyzer)
         self.name = "Ferreira Trader 2.0 (High Assertivity)"
@@ -199,7 +211,7 @@ class FerreiraStrategy(BaseStrategy):
                     return None, f"🤖-❌ IA bloqueou: {ai_reason[:30]}... ({confidence}%)"
                 
                 desc = f"{desc} | 🤖✓{confidence}%"
-            except:
+            except Exception:
                 desc = f"{desc} | ⚠️ IA offline"
                 
         return signal, desc

@@ -9,6 +9,18 @@ from utils.indicators import calculate_sma, calculate_atr
 import json
 
 class ConservadorStrategy(BaseStrategy):
+    """
+    ESTRATÉGIA: Trader Conservador (Fimathe / Canais)
+    
+    Lógica:
+    1. Baseada na Teoria de Canais (Fimathe) e Tendência Macro (SMA 200).
+    2. Identifica um 'Canal de Referência' e uma 'Zona Neutra'.
+    3. Aguarda rompimento CONFIRMADO do canal a favor da tendência.
+    4. STATE MACHINE:
+       - WAITING_CHANNEL: Escaneia volatilidade e forma o canal.
+       - CHANNEL_LOCKED: Monitora o rompimento (Breakout).
+    5. Extremamente seletiva: Só entra em tendência clara e forte.
+    """
     def __init__(self, api_handler, ai_analyzer=None):
         super().__init__(api_handler, ai_analyzer)
         self.name = "Trader Conservador"
@@ -27,7 +39,7 @@ class ConservadorStrategy(BaseStrategy):
     def calculate_atr_safe(self, candles, period=14):
         try:
             return calculate_atr(candles, period)
-        except:
+        except Exception:
             return 0.0001
 
     def check_signal(self, pair, timeframe):
@@ -159,7 +171,7 @@ class ConservadorStrategy(BaseStrategy):
                     return None, f"🤖-❌ IA bloqueou: {ai_reason[:30]}... ({confidence}%)"
                 
                 desc = f"{desc} | 🤖✓{confidence}%"
-            except:
+            except Exception:
                 desc = f"{desc} | ⚠️ IA offline"
             
         return signal, desc

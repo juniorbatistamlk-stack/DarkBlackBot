@@ -300,6 +300,30 @@ class SmartTrader:
             pattern = trade_info.get("pattern", desc)
             
             log_func(f"[green]💰 Executando ordem [{cfg.option_type}]: {signal} em {pair} (R${cfg.amount:.2f})[/green]")
+
+            # === TRAVA DE TEMPO (VIRADA DE VELA) ===
+            # Só permite abertura no INÍCIO da nova vela (primeiro 1s).
+            # Motivo: na IQ, abrir no fim da vela pode gerar expiração curta (poucos segundos).
+            entry_window_s = 1.0
+            candle_duration = float(cfg.timeframe) * 60.0
+
+            def _elapsed_in_candle(ts: float) -> float:
+                return float(ts) % candle_duration
+
+            try:
+                st = self.api.get_server_timestamp()
+                elapsed0 = _elapsed_in_candle(st)
+                if not (0.0 <= elapsed0 <= entry_window_s):
+                    self.last_order_opened = False
+                    log_func(
+                        f"[yellow]⏳ Entrada bloqueada: estamos em {elapsed0:.2f}s da vela. "
+                        f"Liberado apenas no primeiro {entry_window_s:.0f}s.[/yellow]"
+                    )
+                    return 0
+            except Exception:
+                self.last_order_opened = False
+                log_func("[yellow]⚠️ Não foi possível confirmar o timing do servidor. Entrada bloqueada.[/yellow]")
+                return 0
             
             try:
                 def _should_retry_open(reason: str) -> bool:
@@ -336,6 +360,20 @@ class SmartTrader:
                 max_open_attempts = 3
                 check, order_id = False, ""
                 for attempt in range(1, max_open_attempts + 1):
+                    # Revalidar janela antes de cada tentativa para evitar abrir após virar.
+                    try:
+                        st_now = self.api.get_server_timestamp()
+                        elapsed = _elapsed_in_candle(st_now)
+                        if not (0.0 <= elapsed <= entry_window_s):
+                            self._log_system(
+                                f"[IQ] ⛔ Janela de entrada perdida (elapsed {elapsed:.2f}s). Abortando abertura."
+                            )
+                            check, order_id = False, "EntryWindowMissed"
+                            break
+                    except Exception:
+                        check, order_id = False, "ServerTimeUnavailable"
+                        break
+
                     self._log_system(f"[IQ] Tentando ({attempt}/{max_open_attempts}): {pair} {signal}...")
                     check, order_id = self.api.buy(cfg.amount, pair, signal, cfg.timeframe)
                     self._log_system(f"[IQ] Resposta: check={check}, id={order_id}")
@@ -382,11 +420,11 @@ class SmartTrader:
                         return 0
                 else:
                     self.last_order_opened = False
-                    log_func(f"[bold red]❌ FALHA AO ABRIR ORDEM[/bold red]")
-                    log_func(f"[red]Motivo: {order_id}[/red]")
+                    reason_msg = str(order_id)
+                    log_func(f"[bold red]❌ FALHA AO ABRIR ORDEM: {reason_msg}[/bold red]")
                     
                     # Mensagens específicas para erros comuns
-                    error_lower = str(order_id).lower()
+                    error_lower = reason_msg.lower()
                     if "socket" in error_lower or "closed" in error_lower:
                         log_func(f"[yellow]🔄 Erro de conexão detectado. O sistema tentará reconectar...[/yellow]")
                     elif "timeout" in error_lower:
@@ -433,41 +471,39 @@ class SmartTrader:
             
             log_func(f"[yellow]🔄 GALE {level+1}: R${curr_amount:.2f} | Aguardando ponto de entrada...[/yellow]")
             
-            # === SMART TIMING LOGIC ===
-            # Tentar entrar na vela IMEDIATA se ainda estiver no início (Tolerance 0s-4s)
-            # Se perdeu a entrada (delay > 4s), esperar a proxima vela cheia.
-            
-            candle_duration = cfg.timeframe * 60
-            server_time = self.api.get_server_timestamp()
-            
-            # Normalizar para tempo decorrido na vela atual
-            # Ex: 10:05:02 -> elapsed = 2
-            current_elapsed = server_time % candle_duration
-            
-            if current_elapsed <= 4:
-                # Estamos no início da vela (Janela de Tolerância) -> Entrar JÁ!
-                log_func(f"[green]⚡ GALE IMEDIATO (Janela {current_elapsed}s)[/green]")
-            else:
-                # Passou do tempo, esperar a próxima vela
-                seconds_remaining = candle_duration - current_elapsed
-                wait_time = seconds_remaining # Espera até bater 00 da próxima
-                
-                log_func(f"[dim]Janela perdida ({current_elapsed}s). Aguardando {wait_time}s para próxima vela...[/dim]")
-                
-                # Loop de espera preciso (Server Side)
-                target_timestamp = server_time + wait_time
-                message_shown = False
+            # === TIMING (VIRADA DE VELA) ===
+            # GALE também executa no início da vela (primeiro 1s).
+            entry_window_s = 1.0
+            candle_duration = float(cfg.timeframe) * 60.0
+
+            def _elapsed_in_candle(ts: float) -> float:
+                return float(ts) % candle_duration
+
+            try:
+                server_time = self.api.get_server_timestamp()
+                elapsed0 = _elapsed_in_candle(server_time)
+            except Exception:
+                log_func("[yellow]⚠️ Não foi possível sincronizar tempo do servidor para GALE.[/yellow]")
+                break
+
+            # Se não estamos no começo, esperar a próxima vela virar
+            if elapsed0 > entry_window_s:
+                wait_time = candle_duration - elapsed0
+                log_func(f"[dim]Aguardando {wait_time:.2f}s para virar e entrar no início da vela...[/dim]")
+                target = server_time + wait_time
                 while True:
                     now = self.api.get_server_timestamp()
-                    rem = target_timestamp - now
-                    if rem <= 0:
+                    if now >= target:
                         break
-                    # Log periódico se for longo
-                    if rem > 10 and rem % 10 == 0:
-                         log_func(f"[dim]Gale em {rem}s...[/dim]")
-                    time.sleep(0.5)
-                    
-                log_func(f"[green]⚡ GALE DISPARADO (Nova Vela)[/green]")
+                    time.sleep(0.25)
+
+            # Rechecar (evita disparar tarde)
+            st2 = self.api.get_server_timestamp()
+            elapsed2 = _elapsed_in_candle(st2)
+            if not (0.0 <= elapsed2 <= entry_window_s):
+                log_func(f"[yellow]⛔ GALE bloqueado: janela perdida (elapsed {elapsed2:.2f}s).[/yellow]")
+                break
+            log_func("[green]⚡ GALE DISPARADO (abertura da vela)[/green]")
             
             # Executar gale
             check, order_id = self.api.buy(curr_amount, pair, signal, cfg.timeframe)

@@ -2,6 +2,17 @@
 from .base_strategy import BaseStrategy
 
 class LogicaPrecoStrategy(BaseStrategy):
+    """
+    ESTRATÉGIA: Lógica do Preço (Travamentos e Comandos)
+    
+    Lógica:
+    1. Mapeia 'Velas de Comando' (Abertura = Máxima ou Mínima) como zonas fortes.
+    2. Identifica 'Travamentos' (Preço fecha exatamente na zona, sem romper).
+    3. Setup de Reversão:
+       - Se trava em Suporte de Comando -> CALL.
+       - Se trava em Resistência de Comando -> PUT.
+    4. Opera a defesa da zona institucional.
+    """
     def __init__(self, api_handler, ai_analyzer=None):
         super().__init__(api_handler, ai_analyzer)
         self.name = "Lógica do Preço (Travamentos)"
@@ -45,6 +56,9 @@ class LogicaPrecoStrategy(BaseStrategy):
         # Verifica Travamento (Distância <= Buffer)
         if dist <= self.buffer_travamento:
             
+            signal = None
+            desc = ""
+
             # CASO VENDA (PUT)
             # Vela Verde (Bullish) travou na RESISTÊNCIA de um Comando Baixa (ou similar)
             if previous['close'] > previous['open']:
@@ -67,7 +81,7 @@ class LogicaPrecoStrategy(BaseStrategy):
                     if not should_trade:
                         return None, f"🤖-❌ IA bloqueou: {ai_reason[:30]}... ({confidence}%)"
                     desc = f"{desc} | 🤖✓{confidence}%"
-                except:
+                except Exception:
                     desc = f"{desc} | ⚠️ IA offline"
             
             if signal:
