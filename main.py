@@ -308,12 +308,45 @@ def run_trading_session(api, strategy, pairs, cfg, memory, ai_analyzer):
                     elif analysis_elapsed > 20:
                         log_msg(f"[yellow]⏱️ Análise demorou {analysis_elapsed:.1f}s - pode haver gargalo[/yellow]")
 
-                # Executar no segundo 59 (último segundo antes do fechamento)
-                # Janela de disparo (evita perder entrada por latência / refresh)
-                entry_window = 6.0  # segundos (janela mais ampla para não perder entrada)
+                # ARMAR no último 2s e EXECUTAR no segundo 59 (1s antes da virada).
+                # Motivo: Antecipar a virada para pegar a abertura exata.
+                arm_window = 2.0
+                open_window = 5.0 # Janela permissiva para delay
 
-                if cached_signal and seconds_left <= entry_window:
-                    worker_status = f"⚡ EXECUTANDO (janela {entry_window:.0f}s)!"
+                if cached_signal and (0 < seconds_left <= arm_window):
+                    worker_status = "⏱️ SINAL ARMADO! Aguardando ponto de disparo (59s)..."
+
+                    # Espera server-side até segundo 59 (1s antes do fim)
+                    target_turn = candle_end - 1
+                    while True:
+                        try:
+                            now_ts = api.get_server_timestamp()
+                        except Exception:
+                            now_ts = 0
+                        if isinstance(now_ts, (int, float)) and now_ts >= target_turn:
+                            break
+                        time.sleep(0.05)
+
+                    # Confirmar que estamos dentro da janela inicial da nova vela
+                    try:
+                        now_ts = api.get_server_timestamp()
+                    except Exception:
+                        now_ts = 0
+
+                    if not isinstance(now_ts, (int, float)) or now_ts <= 0:
+                        worker_status = "⚠️ Tempo inválido na virada. Abortando entrada."
+                        cached_signal = None
+                        time.sleep(0.5)
+                        continue
+
+                    new_elapsed = now_ts - target_turn
+                    if not (0.0 <= new_elapsed <= open_window):
+                        worker_status = f"⛔ Perdeu a virada ({new_elapsed:.2f}s). Abortando entrada."
+                        cached_signal = None
+                        time.sleep(0.5)
+                        continue
+
+                    worker_status = "⚡ EXECUTANDO (abertura da nova vela)!"
                     log_msg(f"[bold green]🚀 DISPARANDO: {cached_signal['pair']} {cached_signal['signal']}[/bold green]")
                     log_msg(f"[cyan]📋 MOTIVO: {escape(str(cached_signal.get('desc', '')))}[/cyan]")
                     
@@ -338,7 +371,7 @@ def run_trading_session(api, strategy, pairs, cfg, memory, ai_analyzer):
                     time.sleep(2)
                 
                 elif cached_signal:
-                    worker_status = f"🎯 SINAL PRONTO! Disparando em {int(seconds_left)}s"
+                    worker_status = f"🎯 SINAL PRONTO! Disparando quando faltar 1s ({int(seconds_left)}s)"
                     time.sleep(0.5)
                 
                 else:
