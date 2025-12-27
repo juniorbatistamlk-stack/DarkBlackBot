@@ -92,7 +92,7 @@ def select_pairs(api):
     # Lista Completa de Pares OTC
     assets_otc = [
         # Majors
-        "EURUSD-OTC", "GBPUSD-OTC", "USDJPY-OTC", "AUDUSD-OTC", "USDCAD-OTC", "NZDUSD-OTC", "USDCHF-OTC",
+        "EURUSD-OTC", "GBPUSD-OTC", "USDJPY-OTC", "AUDUSD-OTC", "NZDUSD-OTC", "USDCHF-OTC",
         # Crosses
         "EURJPY-OTC", "GBPJPY-OTC", "AUDJPY-OTC", "CADJPY-OTC", "EURGBP-OTC", "EURCAD-OTC", "EURAUD-OTC", 
         "EURNZD-OTC", "GBPCAD-OTC", "GBPCHF-OTC", "GBPAUD-OTC", "GBPNZD-OTC", "AUDCAD-OTC", "AUDCHF-OTC",

@@ -116,10 +116,8 @@ def select_pairs(api):
     
     # Lista Completa de Pares OTC (modo normal)
     target_assets = [
-        "EURUSD-OTC", "GBPUSD-OTC", "USDJPY-OTC", "AUDUSD-OTC", "USDCAD-OTC", "NZDUSD-OTC", "USDCHF-OTC",
-        "EURJPY-OTC", "GBPJPY-OTC", "AUDJPY-OTC", "CADJPY-OTC", "EURGBP-OTC", "EURCAD-OTC", "EURAUD-OTC", 
-        "EURNZD-OTC", "GBPCAD-OTC", "GBPCHF-OTC", "GBPAUD-OTC", "GBPNZD-OTC", "AUDCAD-OTC", "AUDCHF-OTC",
-        "AUDNZD-OTC", "CADCHF-OTC", "NZDJPY-OTC", "XAUUSD-OTC"
+        "EURUSD-OTC", "GBPUSD-OTC", "USDJPY-OTC", "AUDUSD-OTC", "NZDUSD-OTC", "USDCHF-OTC",
+        "EURJPY-OTC", "GBPJPY-OTC", "EURGBP-OTC", "AUDJPY-OTC", "XAUUSD-OTC"
     ]
     
     black_spacer(1)
@@ -403,7 +401,7 @@ def run_trading_session(api, strategy, pairs, cfg, memory, ai_analyzer):
                 secs = now % (cfg.timeframe * 60)
                 
                 # Atualizar display com refresh manual
-                live.update(dashboard.render(current_profit, secs), refresh=True)
+                live.update(dashboard.render(current_profit, secs, worker_status), refresh=True)
                 
                 # Sleep adequado para não consumir CPU desnecessária
                 # VS Code terminal pode piscar com refresh muito agressivo
@@ -573,7 +571,7 @@ def main():
                     [
                         ("1", "OpenRouter", "Padrão • Llama 3.3"),
                         ("2", "Groq", "Ultra rápido • Llama 3"),
-                        ("3", "Gemini", "Google • Flash 1.5"),
+                        ("3", "Gemini", "Google • Gemini Flash"),
                     ],
                     border_style="bright_cyan",
                 ),
@@ -774,6 +772,7 @@ def main():
                         cfg.alavancagem_mode = "NORMAL"
 
                     strategy = AlavancagemStrategy(api, ai_analyzer, mode=cfg.alavancagem_mode)
+                    strategy.name = f"{strategy.name} ({cfg.alavancagem_mode})"
                 else:
                     strategy = get_strategy(sc, api, ai_analyzer)
                 print_panel(console, title_panel("RESUMO DA SELEÇÃO", border_style="white"))
@@ -845,8 +844,8 @@ def main():
                         break
 
                 console.print("\n[bold]2.1 OTC: Restringir Timeframe (Opcional)[/bold]", style="on black")
-                console.print("   [dim]Se ativado, o robô executa OTC apenas em M1/M5 para máxima compatibilidade.[/dim]", style="on black")
-                console.print("   [dim]Se desativado, respeita M1/M5/M15/M30 e tenta fallback só se a corretora rejeitar.[/dim]", style="on black")
+                console.print("   [dim]1. Ativado: o robô executa OTC apenas em M1/M5 para máxima compatibilidade.[/dim]", style="on black")
+                console.print("   [dim]2. Desativado: respeita M1/M5/M15/M30 e tenta fallback só se a corretora rejeitar.[/dim]", style="on black")
                 otc_tf_mode = IntPrompt.ask("   Forçar OTC para M1/M5?", choices=["1", "2"], default=2)
                 cfg.force_otc_m1m5 = (otc_tf_mode == 1)
 
@@ -890,7 +889,38 @@ def main():
                 mem = TradingMemory()
                 if ai_analyzer: ai_analyzer.set_memory(mem)
                 
-                run_trading_session(api, strategy, pairs, cfg, mem, ai_analyzer)
+                # === VALIDAÇÃO FINAL DE PARES (Para evitar congelamentos) ===
+                console.print(Padding(f"\n[dim]Validando compatibilidade de Timeframe (M{cfg.timeframe})...[/dim]", (0,0), style="on black", expand=True))
+                valid_pairs = []
+                with Progress(
+                    SpinnerColumn("dots", style="bright_yellow"),
+                    TextColumn("[bright_yellow]{task.description}"),
+                    transient=True,
+                    console=console
+                ) as progress:
+                    task = progress.add_task("[bright_yellow]Verificando ativos...", total=len(pairs))
+                    
+                    for p in pairs:
+                        progress.update(task, description=f"[bright_yellow]Verificando {p}...")
+                        # Valida apenas o timeframe escolhido (timeout 5s) — remove e segue se travar
+                        if api.validate_pair_timeframes(p, [cfg.timeframe], timeout_s=5.0):
+                            valid_pairs.append(p)
+                            progress.console.print(f"  [green]✓ {p} OK[/green]", style="on black")
+                        else:
+                            progress.console.print(f"  [red]✗ {p} removido (Sem resposta/M{cfg.timeframe})[/red]", style="on black")
+                        progress.advance(task)
+                        
+                if not valid_pairs:
+                    console.print(f"\n[bold red]❌ Nenhum dos pares selecionados suporta M{cfg.timeframe}![/bold red]", style="on black")
+                    console.print("[yellow]Pressione ENTER para retornar ao menu...[/yellow]", style="on black")
+                    input()
+                    continue
+                
+                if len(valid_pairs) < len(pairs):
+                    console.print(f"\n[yellow]⚠️ Lista ajustada: {len(pairs)} -> {len(valid_pairs)} ativos válidos[/yellow]", style="on black")
+                    time.sleep(2)
+                
+                run_trading_session(api, strategy, valid_pairs, cfg, mem, ai_analyzer)
                 
             elif mode == 2: # BACKTEST
                 pairs = select_pairs(api)

@@ -424,11 +424,11 @@ class SmartTrader:
                         return 0
                 else:
                     self.last_order_opened = False
-                    log_func(f"[bold red]❌ FALHA AO ABRIR ORDEM[/bold red]")
-                    log_func(f"[red]Motivo: {order_id}[/red]")
+                    reason_msg = str(order_id)
+                    log_func(f"[bold red]❌ FALHA AO ABRIR ORDEM: {reason_msg}[/bold red]")
                     
                     # Mensagens específicas para erros comuns
-                    error_lower = str(order_id).lower()
+                    error_lower = reason_msg.lower()
                     if "socket" in error_lower or "closed" in error_lower:
                         log_func(f"[yellow]🔄 Erro de conexão detectado. O sistema tentará reconectar...[/yellow]")
                     elif "timeout" in error_lower:

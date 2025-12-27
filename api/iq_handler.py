@@ -303,6 +303,73 @@ class IQHandler:
             )
             return False
 
+    def _ensure_connected_quick(self, timeout_s: float = 5.0) -> bool:
+        """Tentativa rápida de garantir conexão (sem backoff longo).
+
+        Usado em operações de validação/boot onde travar é pior do que falhar.
+        """
+        deadline = time.time() + max(0.1, float(timeout_s))
+
+        # 1) Se já está conectado, ok.
+        if self.api:
+            try:
+                if self.api.check_connect():
+                    try:
+                        _ = self.api.get_balance()
+                        return True
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        # 2) Uma (ou duas) tentativas rápidas de conectar, sem esperas longas.
+        attempts = 2
+        with self._lock:
+            for attempt in range(attempts):
+                if time.time() >= deadline:
+                    return False
+
+                try:
+                    # Resetar conexão anterior
+                    if self.api:
+                        try:
+                            self.api.close_connect()
+                        except Exception:
+                            pass
+                        self.api = None
+
+                    self.api = IQ_Option(self.config.email, self.config.password)
+                    if self.api is None:
+                        self.last_error = "IQ_Option returned None"
+                        return False
+
+                    ok, reason = self.api.connect()
+                    if not ok:
+                        self.last_error = f"Connection failed: {reason}"
+                        # pequeno delay apenas entre tentativas rápidas
+                        time.sleep(0.5)
+                        continue
+
+                    try:
+                        self.api.change_balance(self.config.account_type)
+                    except Exception as e:
+                        self.last_error = f"change_balance falhou: {e}"
+                        time.sleep(0.5)
+                        continue
+
+                    # Confirma que a WS está viva
+                    try:
+                        _ = self.api.get_balance()
+                        return True
+                    except Exception:
+                        time.sleep(0.5)
+                        continue
+                except Exception as e:
+                    self.last_error = str(e)
+                    time.sleep(0.5)
+
+        return False
+
     def get_balance(self):
         """Returns current balance."""
         self._ensure_connected()
@@ -341,20 +408,24 @@ class IQHandler:
         all_profits = self.api.get_all_profit()
         return all_profits.get(pair, {}).get(type_name, 0) * 100
 
-    def get_candles(self, pair, timeframe, amount, timeout_s=8):
+    def get_candles(self, pair, timeframe, amount, timeout_s=8, connect_timeout_s=None):
         """Fetches candle data with bounded timeout to prevent freezing.
         Optional timeout_s allows quicker checks (e.g., timeframe validation).
+        connect_timeout_s: se definido, usa um modo rápido de conexão (sem backoff longo).
         """
         result = []
 
         # VERIFICAÇÃO CRUCIAL: garante conexão antes de começar
-        if not self._ensure_connected():
-            self._log_throttled(
-                f"candles_conn_fail_{pair}",
-                f"[IQ] ❌ Falha ao conectar para buscar candles de {pair}",
-                interval_s=10.0,
-            )
-            return []
+        # MODIFICAÇÃO: Se connect_timeout_s for usado, a verificação é feita DENTRO da thread
+        # para garantir que o timeout global da função `get_candles` (via join) funcione.
+        if connect_timeout_s is None:
+            if not self._ensure_connected():
+                self._log_throttled(
+                    f"candles_conn_fail_{pair}",
+                    f"[IQ] ❌ Falha ao conectar para buscar candles de {pair}",
+                    interval_s=10.0,
+                )
+                return []
 
         # Se já existe um fetch em andamento para este par, não cria outro.
         with self._candles_inflight_lock:
@@ -370,6 +441,11 @@ class IQHandler:
         def _fetch():
             nonlocal result
             try:
+                # Se modo rápido, verificar conexão AQUI DENTRO (protegido por timeout da thread)
+                if connect_timeout_s is not None:
+                    if not self._ensure_connected_quick(float(connect_timeout_s)):
+                        return
+
                 # Try up to 2 times
                 for attempt in range(2):
                     try:
@@ -612,11 +688,11 @@ class IQHandler:
             
             thread = threading.Thread(target=_buy_thread)
             thread.start()
-            thread.join(timeout=6) # 6 segundos máximo para execução!
+            thread.join(timeout=15) # 15 segundos máximo para execução (Aumentado para evitar falha em rede lenta)
             
             if thread.is_alive():
-                self._log("[IQ] ⚠️ TIMEOUT: Operação excedeu 6 segundos!")
-                self.last_error = "API timeout (6s)"
+                self._log("[IQ] ⚠️ TIMEOUT: Operação excedeu 15 segundos!")
+                self.last_error = "API timeout (15s)"
                 return False, "Timeout ao executar trade - Tente novamente"
         except Exception as e:
             self._log(f"[IQ] ❌ Erro crítico threading: {e}")
@@ -721,37 +797,27 @@ class IQHandler:
         
         return results
 
-    def validate_pair_timeframes(self, pair, timeframes=(1, 5, 15, 30)):
+    def validate_pair_timeframes(self, pair, timeframes=(1, 5, 15, 30), timeout_s: float = 2.0):
         """Valida se um par aceita operar nas timeframes fornecidas.
         Retorna True somente se TODAS as timeframes retornarem candles.
-        Resiliente a desconexões, com tentativas rápidas e baixo log.
+        Modo RÁPIDO: 1 tentativa por timeframe, timeout curto. Fail-fast.
         """
-        if not self._ensure_connected():
-            return False
-
         for tf in timeframes:
-            ok = False
-            for attempt in range(2):  # até 2 tentativas por timeframe
-                try:
-                    # usar timeout rápido para não travar o scanner
-                    candles = self.get_candles(pair, int(tf), 3, timeout_s=3)
-                    if candles:
-                        ok = True
-                        break
-                except Exception as e:
-                    # evitar poluição de log; reconectar apenas na 1ª falha
-                    if attempt == 0:
-                        try:
-                            if self.api:
-                                self.api.close_connect()
-                        except Exception:
-                            pass
-                        self.api = None
-                        self._ensure_connected()
-                finally:
-                    time.sleep(0.2)  # anti rate-limit
-            if not ok:
+            # Uma única tentativa por timeframe para não travar o boot
+            try:
+                # Fail-fast com timeout configurável e conexão rápida (sem backoff longo)
+                candles = self.get_candles(
+                    pair,
+                    int(tf),
+                    3,
+                    timeout_s=float(timeout_s),
+                    connect_timeout_s=float(timeout_s),
+                )
+                if not candles:
+                    return False
+            except Exception:
                 return False
+                
         return True
 
     def filter_pairs_by_timeframes(self, pairs_list, timeframes=(1, 5, 15, 30)):

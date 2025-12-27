@@ -5,11 +5,20 @@
 # -----------------------------------------------------------------------------
 
 from .base_strategy import BaseStrategy
-from utils.indicators import calculate_atr
+from utils.indicators import calculate_atr, calculate_ema
 from utils.sr_zones import detect_swing_highs_lows, create_sr_zones, is_near_zone
 from utils.patterns import is_pin_bar, is_engulfing
 
 class AlavancagemSRStrategy(BaseStrategy):
+    """
+    ESTRATÉGIA: Alavancagem S/R Sniper
+    
+    Lógica:
+    1. Identifica zonas de Suporte e Resistência baseadas em Swing Highs/Lows.
+    2. Espera o preço chegar próximo a uma zona (+/- tolerância).
+    3. Confirma a entrada com Padrões de Candle (Martelo, Engolfo, Marubozu).
+    4. Filtra transações contra a tendência macro (EMA 20/50).
+    """
     def __init__(self, api_handler, ai_analyzer=None):
         super().__init__(api_handler, ai_analyzer)
         self.name = "Alavancagem S/R Sniper (+5 Padrões)"
@@ -52,8 +61,8 @@ class AlavancagemSRStrategy(BaseStrategy):
         
         # 2. IDENTIFICAR TENDÊNCIA (FLUXO) - RIGOROSO
         # EMA 20 e EMA 50 para definir tendência macro e micro
-        ema20 = self.calculate_ema(candles[:-1], 20)
-        ema50 = self.calculate_ema(candles[:-1], 50)
+        ema20 = calculate_ema(candles[:-1], 20)
+        ema50 = calculate_ema(candles[:-1], 50)
         
         trend = 'NEUTRAL'
         if ema20 and ema50:
@@ -148,7 +157,8 @@ class AlavancagemSRStrategy(BaseStrategy):
                 return None, "Cancelado: Entrada Repetida"
 
             self.last_entry_price = current_price
-            # 🤖 VALIDAÇÃO IA
+            
+        # 🤖 VALIDAÇÃO IA
         if signal and self.ai_analyzer:
             try:
                 zones = {"support": [], "resistance": []}
@@ -157,11 +167,9 @@ class AlavancagemSRStrategy(BaseStrategy):
                 if not should_trade:
                     return None, f"🤖-❌ IA bloqueou: {ai_reason[:30]}... ({confidence}%)"
                 desc = f"{desc} | 🤖✓{confidence}%"
-            except:
+            except Exception:
                 desc = f"{desc} | ⚠️ IA offline"
         return signal, desc
-
-        return None, f"Monitorando Zonas... ({len(self.sr_zones)} ilhas)"
 
     # --- HELPERS ---
     def is_marubozu(self, candle, direction):
@@ -243,4 +251,3 @@ class AlavancagemSRStrategy(BaseStrategy):
             return 'BEARISH'
         
         return 'NEUTRAL'
-

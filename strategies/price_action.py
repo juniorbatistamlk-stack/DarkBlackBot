@@ -4,6 +4,17 @@ from utils.indicators import calculate_sma, calculate_atr
 from utils.sr_zones import detect_swing_highs_lows
 
 class PriceActionStrategy(BaseStrategy):
+    """
+    ESTRATÉGIA: Price Action Reversal Master
+    
+    Lógica:
+    1. Foca puramente em padrões de reversão clássicos do Price Action.
+    2. Mapeia Topos e Fundos (Swing Highs/Lows) como zonas de interesse.
+    3. Entra em operações DEPOIS que o preço testa a zona e rejeita:
+       - Martelo/Shooting Star (Rejeição clara).
+       - Engolfo (Mudança de força dominante).
+    4. Filtra operações contra a tendência principal (SMA 50).
+    """
     def __init__(self, api_handler, ai_analyzer=None):
         super().__init__(api_handler, ai_analyzer)
         self.name = "Price Action Reversal Master 1.0"
@@ -123,7 +134,7 @@ class PriceActionStrategy(BaseStrategy):
                 if not should_trade:
                     return None, f"🤖-❌ IA bloqueou: {ai_reason[:30]}... ({confidence}%)"
                 desc = f"{desc} | 🤖✓{confidence}%"
-            except:
+            except Exception:
                 desc = f"{desc} | ⚠️ IA offline"
         return signal, desc
 

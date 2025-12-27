@@ -3,6 +3,7 @@
 Sistema de Analise com IA via OpenRouter para validar sinais de trading
 Com integração de memória para aprendizado contínuo
 """
+import os
 import time
 from openai import OpenAI
 
@@ -13,19 +14,28 @@ class AIAnalyzer:
         Providers: 'openrouter', 'groq', 'gemini'
         """
         self.provider = provider.lower()
+        # Permite override de modelo por env sem alterar UX
+        # - AI_MODEL: fallback geral
+        # - <PROVIDER>_MODEL: específico do provedor
+        def _env_model(provider_name: str) -> str | None:
+            return (
+                os.getenv(f"{provider_name.upper()}_MODEL")
+                or os.getenv("AI_MODEL")
+                or None
+            )
         
         if self.provider == "groq":
             base_url = "https://api.groq.com/openai/v1"
-            self.model = "llama-3.3-70b-versatile"
+            self.model = _env_model("groq") or "llama-3.3-70b-versatile"
             print(f"[AI] Conectando via GROQ ({self.model})")
         elif self.provider == "gemini":
-            base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
-            self.model = "gemini-2.0-flash"
+            base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+            self.model = _env_model("gemini") or "gemini-2.0-flash"
             print(f"[AI] Conectando via GEMINI ({self.model})")
         else:
             # Default: OpenRouter
             base_url = "https://openrouter.ai/api/v1"
-            self.model = "meta-llama/llama-3.3-70b-instruct:free"
+            self.model = _env_model("openrouter") or "meta-llama/llama-3.3-70b-instruct:free"
             print(f"[AI] Conectando via OPENROUTER ({self.model})")
 
         self.client = OpenAI(
@@ -68,11 +78,32 @@ class AIAnalyzer:
             return True, "Conexão OK"
         except Exception as e:
             msg = str(e)
-            if "401" in msg or "key" in msg.lower():
-                return False, "Chave Inválida (401)"
-            elif "404" in msg:
+
+            # Tenta extrair status code de exceções do SDK (openai>=1.x)
+            status_code = getattr(e, "status_code", None)
+            if status_code is None:
+                resp = getattr(e, "response", None)
+                status_code = getattr(resp, "status_code", None)
+
+            # 429 normalmente significa quota/rate-limit (chave pode estar correta)
+            if status_code == 429 or "429" in msg or "rate" in msg.lower() or "quota" in msg.lower() or "RESOURCE_EXHAUSTED" in msg:
+                return True, "Chave OK, mas limite/QUOTA atingido (429) — tente novamente em alguns minutos ou ajuste quota/faturamento"
+
+            # Erros típicos de autenticação/permissão
+            if status_code in (401, 403) or "401" in msg or "403" in msg or "unauthorized" in msg.lower() or "permission" in msg.lower() or "api key" in msg.lower():
+                return False, "Chave inválida/sem permissão (401/403)"
+
+            if status_code == 404 or "404" in msg:
                 return False, "Modelo não encontrado (404)"
-            return False, f"Erro: {msg[:30]}..."
+
+            if status_code == 400 or "400" in msg or "bad request" in msg.lower():
+                return False, "Requisição inválida (400) — verifique modelo/provedor"
+
+            # Fallback: não classificar como inválida sem evidência
+            short = msg.replace("\n", " ").strip()
+            if len(short) > 180:
+                short = short[:180] + "..."
+            return False, f"Erro ao validar: {short}"
             
     def set_memory(self, memory):
         """Define a memoria para aprendizado"""

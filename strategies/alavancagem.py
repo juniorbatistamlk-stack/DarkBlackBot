@@ -286,7 +286,7 @@ class AlavancagemStrategy(BaseStrategy):
     
     def __init__(self, api_handler, ai_analyzer=None, mode: str = "NORMAL"):
         super().__init__(api_handler, ai_analyzer)
-        self.name = "FIA - Fluxo Inteligente Agressivo"
+        self.name = "FLEX - Fluxo Inteligente Agressivo"
         self.mode = (mode or "NORMAL").upper().strip()
         self.sr_zones = {}  # Cache de zonas S/R por par
         self.analyzed_pairs = set()
@@ -300,12 +300,12 @@ class AlavancagemStrategy(BaseStrategy):
         # Parâmetros por modo (ajustes cirúrgicos para aumentar sinais sem virar "metralhadora")
         if self.mode == "FLEX":
             return {
-                "vol_min_pct": 0.0535,      # +7% rigor (era 0.05)
-                "min_range_atr": 0.0535,    # +7% rigor (era 0.05)
-                # Corpo: 40% -> 43%
-                "flow_body_min": 0.43,      # +7% rigor: exige velas levemente mais cheias
+                "vol_min_pct": 0.053,       # +6% rigor (era 0.05)
+                "min_range_atr": 0.053,     # +6% rigor (era 0.05)
+                # Corpo: 40% -> 42.4%
+                "flow_body_min": 0.424,     # +6% rigor
                 "sr_tol_mult": 0.005,       # Mantido (zona de S/R)
-                "atr_valid_factor": 0.535,  # +7% rigor na validação ATR (era 0.50)
+                "atr_valid_factor": 0.53,   # +6% rigor na validação ATR (era 0.50)
                 "sr_strength_min": 1,       # 1 toque já serve de alerta
                 "allow_countertrend_sr_reversal": True,
                 "allow_sr_breakout": True,
