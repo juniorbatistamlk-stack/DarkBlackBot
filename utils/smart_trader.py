@@ -368,7 +368,10 @@ class SmartTrader:
                     try:
                         st_now = self.api.get_server_timestamp()
                         elapsed = _elapsed_in_candle(st_now)
-                        if not (0.0 <= elapsed <= entry_window_s):
+                        # Permitir primeiros 5s OU últimos 2s (antecipação 58s/59s)
+                        valid_window_retry = (elapsed <= entry_window_s) or (elapsed >= candle_duration - 2.0)
+                        
+                        if not valid_window_retry:
                             self._log_system(
                                 f"[IQ] ⛔ Janela de entrada perdida (elapsed {elapsed:.2f}s). Abortando abertura."
                             )
