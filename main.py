@@ -42,6 +42,11 @@ from strategies.ana_tavares import AnaTavaresStrategy
 from strategies.conservador import ConservadorStrategy
 from strategies.alavancagem import AlavancagemStrategy
 from strategies.alavancagem_sr import AlavancagemSRStrategy
+from strategies.ferreira_price_action import FerreiraPriceActionStrategy
+from strategies.ferreira_snr_advanced import FerreiraSNRAdvancedStrategy
+from strategies.ferreira_moving_avg import FerreiraMovingAvgStrategy
+from strategies.ferreira_primeiro_registro import FerreiraPrimeiroRegistroStrategy
+from strategies.trader_machado import TraderMachadoStrategy
 
 # =============================================================================
 # SETUP GLOBAL
@@ -101,7 +106,12 @@ def get_strategy(choice, api, ai_analyzer=None):
         4: AnaTavaresStrategy,
         5: ConservadorStrategy,
         6: AlavancagemStrategy,
-        7: AlavancagemSRStrategy
+        7: AlavancagemSRStrategy,
+        8: FerreiraPriceActionStrategy,
+        9: FerreiraSNRAdvancedStrategy,
+        10: FerreiraMovingAvgStrategy,
+        11: FerreiraPrimeiroRegistroStrategy,
+        12: TraderMachadoStrategy
     }
     strategy_cls = strategies.get(choice, FerreiraStrategy)
     return strategy_cls(api, ai_analyzer)
@@ -717,6 +727,42 @@ def main():
                     "AGRESSIVO",
                     "Tendência + S/R | WR: 60-68% | Sinais: Alto | Risco: ●●●●○",
                 )
+                strategies_table.add_row(
+                    "7",
+                    "🎯 ALAVANCAGEMSIMBOL SR",
+                    "AGRESSIVO",
+                    "S/R Extremo | WR: 62-70% | Sinais: Médio | Risco: ●●●●○",
+                )
+                strategies_table.add_row(
+                    "8",
+                    "⚡ PRICE ACTION DINÂMICO",
+                    "AVANÇADO",
+                    "Fluxo + Pavio + Simetria + MACD | WR: 70-75% | Risco: ●●●○○",
+                )
+                strategies_table.add_row(
+                    "9",
+                    "🔥 SNR ADVANCED",
+                    "AVANÇADO",
+                    "Rompimento Falso + Exaustão | WR: 72-78% | Risco: ●●○○○",
+                )
+                strategies_table.add_row(
+                    "10",
+                    "📈 MÉDIAS MÓVEIS",
+                    "MODERADO",
+                    "EMA5 x SMA20 + Pullback | WR: 68-73% | Risco: ●●●○○",
+                )
+                strategies_table.add_row(
+                    "11",
+                    "🎖️ PRIMEIRO REGISTRO V2",
+                    "AVANÇADO",
+                    "Defesa 1R + Vela Força | WR: 80-90% | Risco: ●○○○○",
+                )
+                strategies_table.add_row(
+                    "12",
+                    "🧠 TRADER MACHADO",
+                    "EXPERT",
+                    "Lotes + Simetria + Lógica Preço | WR: 85-90% | Risco: ●○○○○",
+                )
 
                 print_panel(console, title_panel("CENTRAL DE ESTRATÉGIAS", "Escolha seu perfil", border_style="bright_cyan"))
 
@@ -726,7 +772,7 @@ def main():
                 )
                 print_panel(console, section("Estratégias Disponíveis", strat_content, border_style="bright_cyan"))
                 
-                sc = IntPrompt.ask("[bright_white]Selecione a Estratégia (1-6)[/bright_white]", choices=["1","2","3","4","5","6"])
+                sc = IntPrompt.ask("[bright_white]Selecione a Estratégia (1-12)[/bright_white]", choices=["1","2","3","4","5","6","7","8","9","10","11","12"])
                 
                 # Warning Risk
                 if sc == 6:

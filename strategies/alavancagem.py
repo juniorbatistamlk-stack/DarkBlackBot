@@ -300,12 +300,12 @@ class AlavancagemStrategy(BaseStrategy):
         # Parâmetros por modo (ajustes cirúrgicos para aumentar sinais sem virar "metralhadora")
         if self.mode == "FLEX":
             return {
-                "vol_min_pct": 0.053,       # +6% rigor (era 0.05)
-                "min_range_atr": 0.053,     # +6% rigor (era 0.05)
-                # Corpo: 40% -> 42.4%
-                "flow_body_min": 0.424,     # +6% rigor
+                "vol_min_pct": 0.0535,      # -1% adicional (Ajuste fino II)
+                "min_range_atr": 0.0535,    # -1% adicional
+                # Corpo: 42.9% -> 42.5%
+                "flow_body_min": 0.425,     # -1% adicional
                 "sr_tol_mult": 0.005,       # Mantido (zona de S/R)
-                "atr_valid_factor": 0.53,   # +6% rigor na validação ATR (era 0.50)
+                "atr_valid_factor": 0.535,  # -1% adicional
                 "sr_strength_min": 1,       # 1 toque já serve de alerta
                 "allow_countertrend_sr_reversal": True,
                 "allow_sr_breakout": True,
