@@ -286,8 +286,16 @@ class AlavancagemStrategy(BaseStrategy):
     
     def __init__(self, api_handler, ai_analyzer=None, mode: str = "NORMAL"):
         super().__init__(api_handler, ai_analyzer)
-        self.name = "FLEX - Fluxo Inteligente Agressivo"
         self.mode = (mode or "NORMAL").upper().strip()
+        # Atualizar nome baseado no modo
+        if self.mode == "BLACK":
+            self.name = "BLACK FLEX - Alavancagem LTA/LTB"
+        elif self.mode == "FLEX":
+            self.name = "FLEX - Fluxo Inteligente Agressivo"
+        elif self.mode == "PITBULL":
+            self.name = "PITBULL - Ultra Agressivo"
+        else:
+            self.name = "ALAVANCAGEM - Normal"
         self.sr_zones = {}  # Cache de zonas S/R por par
         self.analyzed_pairs = set()
         self.pre_analysis_done = {}
@@ -298,6 +306,23 @@ class AlavancagemStrategy(BaseStrategy):
 
     def _params(self):
         # Parâmetros por modo (ajustes cirúrgicos para aumentar sinais sem virar "metralhadora")
+        
+        # MODO BLACK: Ultra-agressivo LTA/LTB - Apenas tendência + reversões S/R
+        # META: Bater objetivo em 1 hora
+        if self.mode == "BLACK":
+            return {
+                "vol_min_pct": 0.03,        # Baixíssimo filtro de volatilidade
+                "min_range_atr": 0.04,      # Aceita velas pequenas se houver confirmação
+                "flow_body_min": 0.30,      # Corpo de 30% já é suficiente para confirmação
+                "sr_tol_mult": 0.008,       # Zona S/R mais ampla para capturar mais reversões
+                "atr_valid_factor": 0.30,   # Validação mínima de ATR
+                "sr_strength_min": 1,       # 1 toque já identifica zona
+                "reversal_body_min": 0.30,  # Reversão precisa de corpo 30%+
+                "allow_countertrend_sr_reversal": False,  # NUNCA opera contra tendência
+                "allow_sr_breakout": False,  # Sem rompimentos - apenas reversões
+                "strict_trend_only": True,   # Flag para forçar apenas operações a favor
+            }
+        
         if self.mode == "FLEX":
             return {
                 "vol_min_pct": 0.0535,      # -1% adicional (Ajuste fino II)
@@ -543,7 +568,8 @@ class AlavancagemStrategy(BaseStrategy):
 
         is_lateral = not is_uptrend and not is_downtrend
         
-        if is_lateral and self.mode != "FLEX" and self.mode != "PITBULL":
+        # BLACK pode operar em lateral (operando S/R), outros modos bloqueiam
+        if is_lateral and self.mode not in ["FLEX", "PITBULL", "BLACK"]:
             return None, "⏳ Mercado lateral"
 
         # === ZONAS S/R EXTREMAS (apenas 2+ toques + ATR validação) ===
@@ -635,8 +661,50 @@ class AlavancagemStrategy(BaseStrategy):
         
         # --- CENÁRIO 1: TENDÊNCIA DE ALTA ---
         if is_uptrend:
+            # BLACK MODE: APENAS A FAVOR DA TENDÊNCIA + REVERSÕES EM S/R
+            # REGRA DE OURO: Nunca opera contra a tendência
+            if self.mode == "BLACK":
+                reversal_confirmed = is_red and st["body_pct"] >= p.get("reversal_body_min", 0.30)
+                
+                # 🚫 RESISTÊNCIA: Aguarda reversão para PUT
+                if at_resistance and resistance_strength >= p["sr_strength_min"]:
+                    if reversal_confirmed:
+                        signal = "PUT"
+                        desc = f"⚫ BLACK | Reversão Resistência ({resistance_strength}x)"
+                        setup_kind = "REVERSAO"
+                        setup_pattern = reversal_pattern or "SR_REVERSAL"
+                    else:
+                        return None, f"⏳ BLACK | Resist ({resistance_strength}x) - Aguardando reversão"
+                
+                # ✅ SUPORTE: Aguarda reversão para CALL (a favor da tendência)
+                elif at_support and support_strength >= p["sr_strength_min"]:
+                    if is_green and st["body_pct"] >= p.get("reversal_body_min", 0.30):
+                        signal = "CALL"
+                        desc = f"⚫ BLACK | Reversão Suporte ({support_strength}x)"
+                        setup_kind = "REVERSAO"
+                        setup_pattern = reversal_pattern or "SR_BOUNCE"
+                    else:
+                        return None, f"⏳ BLACK | Sup ({support_strength}x) - Aguardando reversão"
+                
+                # 🚀 FLUXO LIVRE: Segue a tendência de alta
+                elif is_green and st["body_pct"] >= p["flow_body_min"]:
+                    signal = "CALL"
+                    desc = "⚫ BLACK | Fluxo Comprador"
+                    setup_kind = "FLUXO"
+                    setup_pattern = flow_pattern or "TREND_MOMENTUM"
+                
+                # Padrões de fluxo adicionais
+                elif flow_pattern in {"MARUBOZU", "IMPULSE", "THREE_SOLDIERS", "ENGULF_CONT"} and is_green:
+                    signal = "CALL"
+                    desc = f"⚫ BLACK | Padrão {flow_pattern}"
+                    setup_kind = "FLUXO"
+                    setup_pattern = flow_pattern
+                
+                else:
+                    return None, "⏳ BLACK | Aguardando setup"
+            
             # FLEX MODE: Respeita S/R e só entra APÓS reversão confirmada
-            if self.mode == "FLEX":
+            elif self.mode == "FLEX":
                 # 🚫 ZONA DE PERIGO: Resistência detectada
                 if at_resistance and resistance_strength >= p["sr_strength_min"]:
                     # NÃO entra CALL (mesmo com vela verde) - aguarda reversão
@@ -705,8 +773,50 @@ class AlavancagemStrategy(BaseStrategy):
 
         # --- CENÁRIO 2: TENDÊNCIA DE BAIXA ---
         elif is_downtrend:
+            # BLACK MODE: APENAS A FAVOR DA TENDÊNCIA + REVERSÕES EM S/R
+            # REGRA DE OURO: Nunca opera contra a tendência
+            if self.mode == "BLACK":
+                reversal_confirmed = is_green and st["body_pct"] >= p.get("reversal_body_min", 0.30)
+                
+                # 🚫 SUPORTE: Aguarda reversão para CALL
+                if at_support and support_strength >= p["sr_strength_min"]:
+                    if reversal_confirmed:
+                        signal = "CALL"
+                        desc = f"⚫ BLACK | Reversão Suporte ({support_strength}x)"
+                        setup_kind = "REVERSAO"
+                        setup_pattern = reversal_pattern or "SR_BOUNCE"
+                    else:
+                        return None, f"⏳ BLACK | Sup ({support_strength}x) - Aguardando reversão"
+                
+                # ✅ RESISTÊNCIA: Aguarda reversão para PUT (a favor da tendência)
+                elif at_resistance and resistance_strength >= p["sr_strength_min"]:
+                    if is_red and st["body_pct"] >= p.get("reversal_body_min", 0.30):
+                        signal = "PUT"
+                        desc = f"⚫ BLACK | Reversão Resistência ({resistance_strength}x)"
+                        setup_kind = "REVERSAO"
+                        setup_pattern = reversal_pattern or "SR_REVERSAL"
+                    else:
+                        return None, f"⏳ BLACK | Resist ({resistance_strength}x) - Aguardando reversão"
+                
+                # 🧨 FLUXO LIVRE: Segue a tendência de baixa
+                elif is_red and st["body_pct"] >= p["flow_body_min"]:
+                    signal = "PUT"
+                    desc = "⚫ BLACK | Fluxo Vendedor"
+                    setup_kind = "FLUXO"
+                    setup_pattern = flow_pattern or "TREND_MOMENTUM"
+                
+                # Padrões de fluxo adicionais
+                elif flow_pattern in {"MARUBOZU", "IMPULSE", "THREE_CROWS", "ENGULF_CONT"} and is_red:
+                    signal = "PUT"
+                    desc = f"⚫ BLACK | Padrão {flow_pattern}"
+                    setup_kind = "FLUXO"
+                    setup_pattern = flow_pattern
+                
+                else:
+                    return None, "⏳ BLACK | Aguardando setup"
+            
             # FLEX MODE: Respeita S/R e só entra APÓS reversão confirmada
-            if self.mode == "FLEX":
+            elif self.mode == "FLEX":
                 # 🚫 ZONA DE PERIGO: Suporte detectado
                 if at_support and support_strength >= p["sr_strength_min"]:
                     # NÃO entra PUT (mesmo com vela vermelha) - aguarda reversão
@@ -778,7 +888,22 @@ class AlavancagemStrategy(BaseStrategy):
                         setup_kind = "FLUXO"
                         setup_pattern = flow_pattern
         
-        # 4. PITBULL EXTRA: FLUXO EM LATERALIDADE FORTE
+        # 4. BLACK EM LATERAL: Opera S/R puro (ping-pong)
+        if not signal and self.mode == "BLACK" and is_lateral:
+            # Resistência + vela vermelha → PUT
+            if at_resistance and resistance_strength >= p["sr_strength_min"] and is_red and st["body_pct"] >= p.get("reversal_body_min", 0.30):
+                signal = "PUT"
+                desc = f"⚫ BLACK LATERAL | Reversão Resist ({resistance_strength}x)"
+                setup_kind = "REVERSAO"
+                setup_pattern = "SR_REVERSAL"
+            # Suporte + vela verde → CALL
+            elif at_support and support_strength >= p["sr_strength_min"] and is_green and st["body_pct"] >= p.get("reversal_body_min", 0.30):
+                signal = "CALL"
+                desc = f"⚫ BLACK LATERAL | Reversão Sup ({support_strength}x)"
+                setup_kind = "REVERSAO"
+                setup_pattern = "SR_BOUNCE"
+        
+        # 5. PITBULL EXTRA: FLUXO EM LATERALIDADE FORTE
         if not signal and self.mode == "PITBULL" and is_lateral:
              if is_green and st["body_pct"] > 0.5 and not at_resistance:
                  signal = "CALL"

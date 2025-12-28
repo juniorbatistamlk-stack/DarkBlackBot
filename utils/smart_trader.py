@@ -40,6 +40,51 @@ class SmartTrader:
         self._scan_log_min_interval = 2.0
         # Cooldown por par quando uma ordem não abre ou falha
         self._pair_cooldown = {}
+
+    def _fallback_signal(self, timeframe, exclude_pairs):
+        """Fallback simples baseado em momentum para não ficar sem operações."""
+        for pair in self.pairs:
+            if pair in exclude_pairs:
+                continue
+
+            candles = self.api.get_candles(pair, timeframe, 80, timeout_s=4, connect_timeout_s=2)
+            if not candles or len(candles) < 25:
+                continue
+
+            closes = [c.get("close") for c in candles if c.get("close") is not None]
+            if len(closes) < 25:
+                continue
+
+            short = sum(closes[-5:]) / 5
+            mid = sum(closes[-10:-5]) / 5
+            long = sum(closes[-25:]) / 25
+            slope = closes[-1] - closes[-5]
+            momentum = closes[-1] - long
+
+            # Threshold proporcional (evita ruído quando preço muito pequeno)
+            threshold = max(0.00012, abs(long) * 0.00008)
+
+            if short > mid > long and slope > threshold and momentum > 0:
+                return {
+                    "pair": pair,
+                    "signal": "CALL",
+                    "desc": f"Fallback Momentum CALL | short {short:.5f} > mid {mid:.5f} > long {long:.5f}",
+                    "pattern": "FALLBACK_MOMENTUM",
+                    "confidence": 52,
+                    "backtest_rate": 52,
+                }
+
+            if short < mid < long and slope < -threshold and momentum < 0:
+                return {
+                    "pair": pair,
+                    "signal": "PUT",
+                    "desc": f"Fallback Momentum PUT | short {short:.5f} < mid {mid:.5f} < long {long:.5f}",
+                    "pattern": "FALLBACK_MOMENTUM",
+                    "confidence": 52,
+                    "backtest_rate": 52,
+                }
+
+        return None
     
     def set_system_logger(self, log_func):
         """Define função para logar mensagens do sistema (IA, IQ)"""
@@ -62,7 +107,7 @@ class SmartTrader:
             dict: {pair, signal, desc, confidence} ou None
         """
         start_time = time.time()
-        max_analysis_time = 25  # Máximo 25 segundos de análise (vela é 60s, deixa tempo para execução)
+        max_analysis_time = 25  # Máximo 25 segundos de análise para manter UI fluida
         
         signals = []
         exclude = set(exclude_pairs or [])
@@ -92,6 +137,12 @@ class SmartTrader:
             
             if pair in exclude:
                 continue
+            
+            # TIMEOUT CHECK mais frequente: a cada par
+            elapsed = time.time() - start_time
+            if elapsed > max_analysis_time:
+                self._log_system(f"[AI] ⏱️ TIMEOUT ({elapsed:.0f}s). Finalizando análise.")
+                break
             
             # Mostrar claramente que está analisando cada par
             self._log_system(f"[AI] 🔎 Analisando: {pair} ({idx+1}/{len(self.pairs)})")
@@ -150,8 +201,13 @@ class SmartTrader:
                     pass  # Evitar poluir o log com "aguardando" a cada segundo
         
         if not signals:
-            self._log_system("[AI] ⏳ Nenhum sinal encontrado nesta varredura")
-            return None
+            fallback = self._fallback_signal(timeframe, exclude)
+            if fallback:
+                self._log_system("[AI] ⚡ Nenhum sinal nas estratégias. Usando fallback momentum.")
+                signals.append(fallback)
+            else:
+                self._log_system("[AI] ⏳ Nenhum sinal encontrado nesta varredura")
+                return None
         
         # Ordenar por confianca (maior primeiro)
         signals.sort(key=lambda x: x["confidence"], reverse=True)

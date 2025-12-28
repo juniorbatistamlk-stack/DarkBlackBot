@@ -41,7 +41,7 @@ class AIAnalyzer:
         self.client = OpenAI(
             base_url=base_url,
             api_key=api_key,
-            timeout=15.0,
+            timeout=30.0,
         )
         self.memory = memory
         self.last_analysis_time = 0
@@ -110,11 +110,11 @@ class AIAnalyzer:
         self.memory = memory
         print(f"[AI] Memoria conectada: {memory.stats['total_trades']} trades")
     
-    def analyze_signal(self, signal, desc, candles, sr_zones, trend, pair, ai_context=None):
+    def analyze_signal(self, signal, desc, candles, sr_zones, trend, pair, ai_context=None, strategy_logic=None):
         """
         Analisa um sinal usando OpenRouter COM CONTEXTO DA MEMÓRIA
         ai_context: dicionário opcional com 'trend', 'setup', 'pattern', 'sr', 'sr_strength'
-                   (se fornecido, usa ao invés de parsear da descrição)
+        strategy_logic: regras específicas da estratégia (string)
         """
         # Rate limiting
         elapsed = time.time() - self.last_analysis_time
@@ -128,9 +128,9 @@ class AIAnalyzer:
             # Obter contexto da memória
             memory_context = self._get_memory_context(desc)
             
-            # Criar prompt COM MEMÓRIA
+            # Criar prompt COM MEMÓRIA E LÓGICA
             prompt = self._create_prompt_with_memory(
-                signal, desc, candles_data, sr_zones, trend, pair, memory_context
+                signal, desc, candles_data, sr_zones, trend, pair, memory_context, strategy_logic
             )
             
             # Chamar OpenRouter
@@ -247,7 +247,7 @@ class AIAnalyzer:
             formatted.append(f"{direction}({body_pct:.0f}%){wick_tag}")
         return " | ".join(formatted)
     
-    def _create_prompt_with_memory(self, signal, desc, candles_data, zones, trend, pair, memory_context):
+    def _create_prompt_with_memory(self, signal, desc, candles_data, zones, trend, pair, memory_context, strategy_logic=None):
         """Cria prompt com contexto da memória"""
         # Resumo S/R compacto
         zones_summary = "0"
@@ -264,6 +264,7 @@ class AIAnalyzer:
         return f"""ANALISE DE TRADING - BUSCA DE OPORTUNIDADES
 
 {memory_context}
+{chr(10) + "REGRAS DA ESTRATEGIA:" + chr(10) + strategy_logic if strategy_logic else ""}
 
 SINAL PROPOSTO:
 - Par: {pair}

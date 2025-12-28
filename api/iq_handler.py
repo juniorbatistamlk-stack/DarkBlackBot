@@ -20,6 +20,14 @@ class IQHandler:
 
         # Throttle logs to avoid flooding the dashboard (and causing flicker)
         self._last_log_ts = {}
+
+        # Server time fetch can hang inside iqoptionapi; bound it.
+        self._server_ts_inflight = False
+        self._server_ts_lock = threading.Lock()
+        self._server_ts_thread = None
+        self._server_ts_thread_started_at = 0.0
+        self._server_ts_cache = None
+        self._server_ts_cache_wall = 0.0
         
     def set_logger(self, log_func):
         """Define callback para enviar logs ao dashboard"""
@@ -375,11 +383,96 @@ class IQHandler:
         self._ensure_connected()
         return self.api.get_balance()
 
-    def get_server_timestamp(self):
-        """Returns server timestamp safely."""
-        if self._ensure_connected():
-            return self.api.get_server_timestamp()
-        return time.time()  # Fallback to local time
+    def get_server_timestamp(
+        self,
+        timeout_s: float = 2.0,
+        connect_timeout_s: float = 2.0,
+        min_interval_s: float = 0.20,
+        max_cache_stale_s: float = 10.0,
+    ):
+        """Returns server timestamp with bounded timeouts (prevents freezing).
+
+        iqoptionapi's websocket calls may hang; this method caps both connect time
+        and the timestamp call itself. On failure, returns local time as fallback.
+        """
+
+        now_wall = time.time()
+
+        # Cache curto: o worker chama muito (inclusive a cada 50ms no arm window).
+        if self._server_ts_cache and (now_wall - self._server_ts_cache_wall) < float(min_interval_s):
+            return self._server_ts_cache
+
+        # Se já tem uma thread pegando server_ts (ou uma travada), não cria outra.
+        with self._server_ts_lock:
+            t = self._server_ts_thread
+            if t is not None and t.is_alive():
+                # Preferir cache; se cache estiver velho, cair no relógio local.
+                if self._server_ts_cache and (now_wall - self._server_ts_cache_wall) <= float(max_cache_stale_s):
+                    return self._server_ts_cache
+                return now_wall
+
+            if self._server_ts_inflight:
+                if self._server_ts_cache and (now_wall - self._server_ts_cache_wall) <= float(max_cache_stale_s):
+                    return self._server_ts_cache
+                return now_wall
+
+            self._server_ts_inflight = True
+
+        try:
+            # Conexão rápida: preferir falhar rápido a travar.
+            if connect_timeout_s is not None:
+                if not self._ensure_connected_quick(float(connect_timeout_s)):
+                    return now_wall
+            else:
+                if not self._ensure_connected():
+                    return now_wall
+
+            result = {"ts": None}
+            done = threading.Event()
+
+            def _fetch():
+                try:
+                    if not self.api:
+                        return
+                    result["ts"] = self.api.get_server_timestamp()
+                except Exception:
+                    result["ts"] = None
+                finally:
+                    done.set()
+
+            t = threading.Thread(target=_fetch, daemon=True)
+            with self._server_ts_lock:
+                self._server_ts_thread = t
+                self._server_ts_thread_started_at = now_wall
+            t.start()
+            t.join(max(0.1, float(timeout_s)))
+
+            if not done.is_set():
+                self._log_throttled(
+                    "server_ts_timeout",
+                    "[IQ_HANDLER] ⏱️ Timeout ao obter server_time. Usando relógio local.",
+                    interval_s=8.0,
+                )
+                # Não derrubar a UI: se tiver cache recente, usa. Senão, local.
+                if self._server_ts_cache and (now_wall - self._server_ts_cache_wall) <= float(max_cache_stale_s):
+                    return self._server_ts_cache
+                return now_wall
+
+            ts = result.get("ts")
+            if isinstance(ts, (int, float)) and ts > 0:
+                # Alguns builds da IQ retornam timestamp em ms. Normalizar para segundos.
+                if ts > 10_000_000_000:
+                    ts = float(ts) / 1000.0
+
+                self._server_ts_cache = ts
+                self._server_ts_cache_wall = now_wall
+                return ts
+            if self._server_ts_cache and (now_wall - self._server_ts_cache_wall) <= float(max_cache_stale_s):
+                return self._server_ts_cache
+            return now_wall
+        finally:
+            with self._server_ts_lock:
+                self._server_ts_inflight = False
         
     def get_realtime_price(self, pair):
         """Retorna o preço de fechamento da última vela M1 como proxy."""
@@ -408,7 +501,7 @@ class IQHandler:
         all_profits = self.api.get_all_profit()
         return all_profits.get(pair, {}).get(type_name, 0) * 100
 
-    def get_candles(self, pair, timeframe, amount, timeout_s=8, connect_timeout_s=None):
+    def get_candles(self, pair, timeframe, amount, timeout_s=5, connect_timeout_s=None):
         """Fetches candle data with bounded timeout to prevent freezing.
         Optional timeout_s allows quicker checks (e.g., timeframe validation).
         connect_timeout_s: se definido, usa um modo rápido de conexão (sem backoff longo).

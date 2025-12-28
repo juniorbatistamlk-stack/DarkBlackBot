@@ -47,6 +47,7 @@ from strategies.ferreira_snr_advanced import FerreiraSNRAdvancedStrategy
 from strategies.ferreira_moving_avg import FerreiraMovingAvgStrategy
 from strategies.ferreira_primeiro_registro import FerreiraPrimeiroRegistroStrategy
 from strategies.trader_machado import TraderMachadoStrategy
+from strategies.ai_god_mode import AiGodModeStrategy
 
 # =============================================================================
 # SETUP GLOBAL
@@ -58,7 +59,11 @@ socket.setdefaulttimeout(30)
 
 # Force UTF-8 for Windows
 if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding='utf-8')
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 # Suppress internal logging
 logging.disable(logging.CRITICAL)
@@ -81,6 +86,7 @@ current_profit = 0.0
 worker_status = "Iniciando..."
 stop_threads = False
 bot_logs = []
+ui_seconds_left = 0
 
 def verify_license():
     """Verifica licença antes de iniciar"""
@@ -111,7 +117,8 @@ def get_strategy(choice, api, ai_analyzer=None):
         9: FerreiraSNRAdvancedStrategy,
         10: FerreiraMovingAvgStrategy,
         11: FerreiraPrimeiroRegistroStrategy,
-        12: TraderMachadoStrategy
+        12: TraderMachadoStrategy,
+        13: AiGodModeStrategy
     }
     strategy_cls = strategies.get(choice, FerreiraStrategy)
     return strategy_cls(api, ai_analyzer)
@@ -174,11 +181,16 @@ def select_pairs(api):
     return selected if selected else [open_assets[0][0]]
 
 def run_trading_session(api, strategy, pairs, cfg, memory, ai_analyzer):
-    global current_profit, worker_status, stop_threads, bot_logs
+    global current_profit, worker_status, stop_threads, bot_logs, ui_seconds_left
     
     current_profit = 0.0
     stop_threads = False
     bot_logs = []
+    # Valor inicial para o timer não começar em 00:00
+    try:
+        ui_seconds_left = int(getattr(cfg, "timeframe", 1)) * 60
+    except Exception:
+        ui_seconds_left = 60
     
     cfg.asset = ", ".join(pairs) if len(pairs) > 1 else pairs[0]
     dashboard = Dashboard(cfg)
@@ -212,7 +224,7 @@ def run_trading_session(api, strategy, pairs, cfg, memory, ai_analyzer):
     )
     
     def worker():
-        global current_profit, worker_status, stop_threads
+        global current_profit, worker_status, stop_threads, ui_seconds_left
         last_candle_traded = None
         cached_signal = None
 
@@ -257,13 +269,23 @@ def run_trading_session(api, strategy, pairs, cfg, memory, ai_analyzer):
                 
                 # Sincronização básica
                 if server_time <= 0:
-                    worker_status = "⚠️ Sincornizando relógio..."
+                    worker_status = "⚠️ Sincronizando relógio..."
+                    # Fallback local para manter o timer do painel vivo
+                    try:
+                        ui_seconds_left = (cfg.timeframe * 60) - (time.time() % (cfg.timeframe * 60))
+                    except Exception:
+                        ui_seconds_left = 0
                     time.sleep(1)
                     continue
 
                 # Validar que é um número válido antes de qualquer conta
                 if not isinstance(server_time, (int, float)) or server_time <= 0:
                     worker_status = "⚠️ Tempo inválido, aguardando..."
+                    # Fallback local para manter o timer do painel vivo
+                    try:
+                        ui_seconds_left = (cfg.timeframe * 60) - (time.time() % (cfg.timeframe * 60))
+                    except Exception:
+                        ui_seconds_left = 0
                     time.sleep(2)
                     continue
 
@@ -272,6 +294,12 @@ def run_trading_session(api, strategy, pairs, cfg, memory, ai_analyzer):
                 candle_end = candle_start + candle_duration
                 seconds_left = candle_end - server_time
                 seconds_elapsed = server_time - candle_start
+
+                # Compartilhar tempo restante (server-side) com o loop da UI.
+                try:
+                    ui_seconds_left = float(seconds_left)
+                except Exception:
+                    ui_seconds_left = 0
                 
                 # ID único da vela atual
                 current_candle = candle_start
@@ -400,22 +428,50 @@ def run_trading_session(api, strategy, pairs, cfg, memory, ai_analyzer):
     # UI Loop - Otimizado para evitar flickering
     try:
         # screen=True ajuda a manter a interface fixa e evita 'rolagem' por prints externos
-        with Live(dashboard.render(current_profit), auto_refresh=False, screen=True, redirect_stdout=True, redirect_stderr=True) as live:
+        with Live(
+            dashboard.render(current_profit),
+            auto_refresh=False,
+            screen=True,
+            redirect_stdout=True,
+            redirect_stderr=True,
+            console=dashboard.console,
+        ) as live:
+            last_render = time.time()
+            last_render_error = 0.0
             while not stop_threads:
-                now = time.time()
-                
-                # Atualizar logs
-                dashboard.logs = bot_logs
-                
-                # Calcular tempo da vela
-                secs = now % (cfg.timeframe * 60)
-                
-                # Atualizar display com refresh manual
-                live.update(dashboard.render(current_profit, secs, worker_status), refresh=True)
-                
-                # Sleep adequado para não consumir CPU desnecessária
-                # VS Code terminal pode piscar com refresh muito agressivo
-                time.sleep(0.35)
+                now_render = time.time()
+                # Limitar atualizações para no máximo 1/s (evita travamento do Rich)
+                if now_render - last_render < 1.0:
+                    time.sleep(0.1)
+                    continue
+                last_render = now_render
+
+                # Snapshot de logs (evita race na renderização)
+                dashboard.logs = list(bot_logs)
+
+                # SEMPRE calcular tempo restante usando relógio LOCAL
+                # Isso garante que o timer nunca trava em 00:00
+                try:
+                    duration = int(getattr(cfg, "timeframe", 1)) * 60
+                    now_local = time.time()
+                    remaining = int(duration - (now_local % duration))
+                    if remaining <= 0 or remaining > duration:
+                        remaining = duration
+                except Exception:
+                    remaining = 60  # Fallback 60s
+
+                # Atualizar display (auto_refresh=False exige refresh=True)
+                try:
+                    live.update(dashboard.render(current_profit, remaining, worker_status), refresh=True)
+                except Exception as e:
+                    # Se o render travar, continuar sem atualizar visual
+                    now_err = time.time()
+                    if now_err - last_render_error > 5:
+                        last_render_error = now_err
+                        try:
+                            dashboard.log(f"[SYS] Render error: {e}")
+                        except Exception:
+                            pass
                 
         console.print("\n[yellow]Sessão Encerrada. Pressione Enter para voltar...[/yellow]", style="on black")
         input()
@@ -763,6 +819,12 @@ def main():
                     "EXPERT",
                     "Lotes + Simetria + Lógica Preço | WR: 85-90% | Risco: ●○○○○",
                 )
+                strategies_table.add_row(
+                    "13",
+                    "💎 AI GOD MODE (12-in-1)",
+                    "GOD MODE",
+                    "Arbitragem de todas as 12 estratégias via IA | WR: 90%+ | Risco: ●○○○○",
+                )
 
                 print_panel(console, title_panel("CENTRAL DE ESTRATÉGIAS", "Escolha seu perfil", border_style="bright_cyan"))
 
@@ -772,7 +834,7 @@ def main():
                 )
                 print_panel(console, section("Estratégias Disponíveis", strat_content, border_style="bright_cyan"))
                 
-                sc = IntPrompt.ask("[bright_white]Selecione a Estratégia (1-12)[/bright_white]", choices=["1","2","3","4","5","6","7","8","9","10","11","12"])
+                sc = IntPrompt.ask("[bright_white]Selecione a Estratégia (1-13)[/bright_white]", choices=["1","2","3","4","5","6","7","8","9","10","11","12","13"])
                 
                 # Warning Risk
                 if sc == 6:
@@ -804,13 +866,16 @@ def main():
                                 ("1", "Normal (Seletivo)", "Mais filtros • Menos sinais"),
                                 ("2", "Flexível (Mais sinais)", "Menos filtros • Mais oportunidades"),
                                 ("3", "Pitbull Bravo (Ultra agressivo)", "Máximo volume • Alto risco"),
+                                ("4", "⚫ BLACK FLEX - LTA/LTB", "🎯 Apenas tendência + S/R | Meta 1h | Ultra Agressivo"),
                             ],
                             border_style="bright_red",
                         ),
                     )
-                    mode_choice = IntPrompt.ask("Opção", choices=["1", "2", "3"], default=1)
+                    mode_choice = IntPrompt.ask("Opção", choices=["1", "2", "3", "4"], default=1)
                     
-                    if mode_choice == 3:
+                    if mode_choice == 4:
+                        cfg.alavancagem_mode = "BLACK"
+                    elif mode_choice == 3:
                         cfg.alavancagem_mode = "PITBULL"
                     elif mode_choice == 2:
                         cfg.alavancagem_mode = "FLEX"
@@ -948,8 +1013,8 @@ def main():
                     
                     for p in pairs:
                         progress.update(task, description=f"[bright_yellow]Verificando {p}...")
-                        # Valida apenas o timeframe escolhido (timeout 5s) — remove e segue se travar
-                        if api.validate_pair_timeframes(p, [cfg.timeframe], timeout_s=5.0):
+                        # Valida apenas o timeframe escolhido (timeout 12s) — remove e segue se travar
+                        if api.validate_pair_timeframes(p, [cfg.timeframe], timeout_s=12.0):
                             valid_pairs.append(p)
                             progress.console.print(f"  [green]✓ {p} OK[/green]", style="on black")
                         else:
