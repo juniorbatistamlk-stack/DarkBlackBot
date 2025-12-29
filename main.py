@@ -69,6 +69,10 @@ if sys.platform == "win32":
 logging.disable(logging.CRITICAL)
 logging.getLogger().setLevel(logging.CRITICAL)
 
+# === CONFIGURAR ÍCONE E TÍTULO DA JANELA ===
+set_console_title("Dark Black Bot - AI Powered")
+set_console_icon("darkblackbot.ico")
+
 console = Console(style="white on black")
 
 
