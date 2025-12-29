@@ -42,7 +42,6 @@ INSTALADOR_FINAL/
 
 # Sensitive
 *.key
-license_database.json
 trade_history.json
 
 key_gen.py
