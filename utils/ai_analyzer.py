@@ -110,6 +110,101 @@ class AIAnalyzer:
         self.memory = memory
         print(f"[AI] Memoria conectada: {memory.stats['total_trades']} trades")
     
+    def calculate_trade_score(self, signal, trend, sr_zones, candles, desc):
+        """
+        Sistema de Score Objetivo para Opções Binárias
+        Retorna: (score 0-100, breakdown dict)
+        
+        Mínimo para executar: 50 pontos
+        """
+        score = 40  # Base
+        breakdown = {}
+        
+        # 1. TENDÊNCIA (+15 a favor, -15 contra)
+        trend_upper = str(trend).upper()
+        if signal == "CALL" and "UP" in trend_upper:
+            score += 15
+            breakdown["trend"] = "+15 (a favor)"
+        elif signal == "PUT" and "DOWN" in trend_upper:
+            score += 15
+            breakdown["trend"] = "+15 (a favor)"
+        elif "LATERAL" in trend_upper:
+            score -= 5
+            breakdown["trend"] = "-5 (lateral)"
+        else:
+            score -= 15
+            breakdown["trend"] = "-15 (contra)"
+        
+        # 2. ZONA S/R (+10 se perto, -10 se longe)
+        has_sr = False
+        if isinstance(sr_zones, dict):
+            has_sr = len(sr_zones.get('support', [])) > 0 or len(sr_zones.get('resistance', [])) > 0
+        elif isinstance(sr_zones, list):
+            has_sr = len(sr_zones) > 0
+        
+        if has_sr:
+            score += 10
+            breakdown["sr"] = "+10 (zona S/R)"
+        else:
+            score -= 10
+            breakdown["sr"] = "-10 (sem zona)"
+        
+        # 3. PADRÃO DE VELA (+10 se forte)
+        desc_upper = str(desc).upper()
+        strong_patterns = ["MARUBOZU", "ENGOLFO", "HAMMER", "SHOOTING", "PIN_BAR", "SOLDIERS", "CROWS", "MORNING", "EVENING"]
+        if any(p in desc_upper for p in strong_patterns):
+            score += 10
+            breakdown["pattern"] = "+10 (padrão forte)"
+        elif "FLUXO" in desc_upper or "IMPULSO" in desc_upper:
+            score += 8
+            breakdown["pattern"] = "+8 (fluxo/impulso)"
+        else:
+            breakdown["pattern"] = "+0 (padrão comum)"
+        
+        # 4. HISTÓRICO (+15 se bom, -10 se ruim)
+        if self.memory:
+            try:
+                pattern = desc.split("|")[0].strip() if "|" in desc else desc
+                stats = getattr(self.memory, 'stats', {})
+                patterns = stats.get("patterns", {})
+                if pattern in patterns:
+                    p = patterns[pattern]
+                    wins = int(p.get("wins") or 0)
+                    total = int(p.get("total") or 0)
+                    if total >= 5:
+                        win_rate = (wins / total) * 100
+                        if win_rate >= 60:
+                            score += 15
+                            breakdown["history"] = f"+15 (WR:{win_rate:.0f}%)"
+                        elif win_rate < 45:
+                            score -= 10
+                            breakdown["history"] = f"-10 (WR:{win_rate:.0f}%)"
+                        else:
+                            breakdown["history"] = f"+0 (WR:{win_rate:.0f}%)"
+                    else:
+                        breakdown["history"] = "+0 (poucos trades)"
+                else:
+                    breakdown["history"] = "+0 (padrão novo)"
+            except:
+                breakdown["history"] = "+0 (erro)"
+        else:
+            breakdown["history"] = "+0 (sem memória)"
+        
+        # 5. ÚLTIMA VELA (penaliza contradição)
+        if candles and len(candles) >= 1:
+            last = candles[-1]
+            last_direction = "CALL" if last.get('close', 0) > last.get('open', 0) else "PUT"
+            if last_direction != signal:
+                score -= 5
+                breakdown["last_candle"] = "-5 (contradição)"
+            else:
+                score += 5
+                breakdown["last_candle"] = "+5 (confirmação)"
+        
+        score = max(0, min(100, score))
+        return score, breakdown
+
+    
     def analyze_signal(self, signal, desc, candles, sr_zones, trend, pair, ai_context=None, strategy_logic=None):
         """
         Analisa um sinal usando OpenRouter COM CONTEXTO DA MEMÓRIA
@@ -137,7 +232,7 @@ class AIAnalyzer:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "Voce e o Cerebro de um Bot de Trading de Elite. Sua missao e ENCONTRAR OPORTUNIDADES LUCRATIVAS. Seja agressivo mas tecnico. Se ver potencial, mande entrar!"},
+                    {"role": "system", "content": "Voce e um TRADER PROFISSIONAL DE OPCOES BINARIAS com 10+ anos de experiencia. Sua missao e PRESERVAR O CAPITAL e so entrar em trades de ALTA PROBABILIDADE. Em duvida? NAO OPERE. Qualidade > Quantidade."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.4, # Mais criativo/agressivo
@@ -313,7 +408,7 @@ class AIAnalyzer:
         except Exception:
             zones_summary = "?"
 
-        return f"""ANALISE DE TRADING - BUSCA DE OPORTUNIDADES
+        return f"""ANALISE DE TRADING - OPCOES BINARIAS (PROFISSIONAL)
 
 {memory_context}
 {chr(10) + "REGRAS DA ESTRATEGIA:" + chr(10) + strategy_logic if strategy_logic else ""}
@@ -326,19 +421,33 @@ SINAL PROPOSTO:
 - Zonas S/R: {zones_summary}
 - Ultimas 10 velas: {candles_data}
 
-INSTRUCOES (MINDSET: CAÇADOR DE ALPHA):
-1. Analise o contexto para VALIDAR O LUCRO, não para procurar 'pêlo em ovo'.
-2. SE O SETUP TÉCNICO É BOM -> CONFIRME!
-3. Reversão em S/R com pavio? -> ENTRADA CLARA.
-4. Fluxo a favor da tendência? -> ENTRADA CLARA.
-5. Em dúvida? -> CONFIRME (O mercado recompensa quem arrisca com técnica).
-6. REJEITE APENAS SE FOR ERRO GROTESCO (ex: comprar topo sem rompimento).
-7. Histórico ruim? Ignore se o gráfico atual estiver bonito. O passado não dita o futuro imediato.
+=== VOCE E UM TRADER PROFISSIONAL DE OPCOES BINARIAS ===
 
-RESPONDA APENAS SEGUINDO ESTE MODELO (EM PORTUGUÊS):
+REGRAS DE OURO (SEGUIR RIGOROSAMENTE):
+1. EM DUVIDA? NAO OPERE. Preservar capital e prioridade #1.
+2. CONFLUENCIA OBRIGATORIA: So confirme com 2+ fatores alinhados:
+   - Tendencia + S/R + Padrao de vela = ENTRADA FORTE
+   - Apenas 1 fator = REJEITAR
+3. CONTRA-TENDENCIA: So opere se houver EXAUSTAO CLARA (pavio longo + volume).
+4. HISTORICO: Se padrao tem <45% win rate no historico, REJEITE.
+5. TIMING: Entrada no "meio do nada" (longe de S/R) = REJEITAR.
+6. VELA ATUAL: Se a ultima vela contradiz o sinal, REJEITE.
+7. LATERALIZACAO: Muitos pavios sem direcao clara = REJEITE.
+
+CHECKLIST ANTES DE CONFIRMAR:
+[ ] Tendencia clara? (EMA alinhadas ou estrutura HH/HL ou LH/LL)
+[ ] Proximo de S/R? (Nao operar no "vacuo")
+[ ] Padrao de vela valido? (Corpo expressivo, pavio coerente)
+[ ] Sem contradicao na ultima vela?
+[ ] Historico OK? (Padrao nao esta na lista de evitar)
+
+SE 4+ ITENS = SIM → CONFIRMAR
+SE 3 OU MENOS = REJEITAR
+
+RESPONDA APENAS SEGUINDO ESTE MODELO (EM PORTUGUES):
 DECISAO: CONFIRMAR ou REJEITAR
 CONFIANCA: 0-100
-MOTIVO: [Explicação técnica curta e direta em Português do Brasil]"""
+MOTIVO: [Explicacao tecnica curta - max 50 caracteres]"""
     
     def _adjust_confidence_by_winrate(self, confidence, pattern_desc):
         """
