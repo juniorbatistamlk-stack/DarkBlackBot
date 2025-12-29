@@ -563,9 +563,9 @@ def run_trading_session(api, strategy, pairs, cfg, memory, ai_analyzer):
             last_render_error = 0.0
             while not stop_threads:
                 now_render = time.time()
-                # Limitar atualizações para no máximo 1/s (evita travamento do Rich)
-                if now_render - last_render < 1.0:
-                    time.sleep(0.1)
+                # Limitar atualizações para no máximo 2/s (suave e responsivo)
+                if now_render - last_render < 0.5:
+                    time.sleep(0.05)
                     continue
                 last_render = now_render
 
@@ -615,7 +615,7 @@ def main():
     from utils.window_manager import set_console_icon, set_console_title
     set_console_title("Dark Black Bot - AI Powered")
     time.sleep(0.1)  # Small delay to ensure console is ready
-    set_console_icon("icon.ico")
+    set_console_icon("darkblackbot.ico")
     
     # Evitar "faixas" cinzas: imprimir espaçador com fundo preto
     black_spacer(1)

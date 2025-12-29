@@ -55,8 +55,20 @@ class LicenseSystem:
             if os.path.exists(LICENSE_FILE):
                 os.remove(LICENSE_FILE)
             return self.request_activation()
+        
+        # 3. VERIFICAÇÃO DE REVOGAÇÃO REMOTA
+        # Verifica se a chave ainda existe no banco online (permite desativar remotamente)
+        key = local_data.get("key", "")
+        if key:
+            revoked = self._check_if_revoked_online(key)
+            if revoked:
+                self.show_revoked_screen()
+                if os.path.exists(LICENSE_FILE):
+                    os.remove(LICENSE_FILE)
+                input("\nPressione ENTER para inserir nova chave...")
+                return self.request_activation()
             
-        # 3. VERIFICA ESTADO E VALIDADE
+        # 4. VERIFICA ESTADO E VALIDADE
         try:
             expiry_date = datetime.fromisoformat(local_data["expiry_date"])
             days_left = (expiry_date - datetime.now()).days
@@ -108,6 +120,50 @@ class LicenseSystem:
         print("👉 " + SUPPORT_CONTACT)
         print("\nEvite paradas desnecessárias no seu lucro!")
         print("═"*60 + "\n")
+
+    def show_revoked_screen(self):
+        """Tela de Licença Revogada/Desativada"""
+        print("\n" + "█"*60)
+        print("⛔ LICENÇA DESATIVADA REMOTAMENTE")
+        print("█"*60)
+        print("\n🚫 Sua licença foi desativada pelo administrador.")
+        print("Isso pode ocorrer por:")
+        print("  • Solicitação de cancelamento")
+        print("  • Migração para nova chave")
+        print("  • Violação de termos de uso\n")
+        print("Para reativar ou obter nova licença:")
+        print("👉 " + SUPPORT_CONTACT)
+        print("█"*60 + "\n")
+
+    def _check_if_revoked_online(self, key: str) -> bool:
+        """
+        Verifica se a chave ainda existe no banco online.
+        Retorna True se REVOGADA (não existe), False se ainda existe.
+        Se não conseguir verificar (offline), retorna False (permite uso).
+        """
+        try:
+            key_norm = str(key).strip().upper()
+            response = requests.get(LICENSE_DB_URL, timeout=5)
+            if response.status_code != 200:
+                # Não conseguiu verificar online, permitir uso (fail-open)
+                return False
+            
+            db = response.json()
+            licenses = db.get("licenses", [])
+            
+            # Procura a chave no banco
+            for lic in licenses:
+                if str(lic.get("key", "")).strip().upper() == key_norm:
+                    # Chave existe, NÃO está revogada
+                    return False
+            
+            # Chave NÃO encontrada = REVOGADA
+            return True
+            
+        except Exception:
+            # Erro de conexão, permitir uso (fail-open para não bloquear indevidamente)
+            return False
+
 
     def request_activation(self):
         """Solicita chave ao usuário e valida online"""
