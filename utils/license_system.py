@@ -9,6 +9,7 @@ import time
 from datetime import datetime
 import platform
 import subprocess
+from pathlib import Path
 
 # URL DO SEU ARQUIVO SITE (ALTERE ISTO DEPOIS!)
 # Por enquanto usaremos o mesmo repositório de updates
@@ -21,6 +22,8 @@ class LicenseSystem:
     def __init__(self):
         self.device_id = self.get_hwid()
         self.license_data = None
+        self._here = Path(__file__).resolve()
+        self._project_root = self._here.parent.parent
         
     def get_hwid(self):
         """Gera ID único do hardware"""
@@ -118,12 +121,12 @@ class LicenseSystem:
         print("-" * 60)
         
         while True:
-            key = input("\n🔑 Chave: ").strip()
+            key = input("\n🔑 Chave: ").strip().upper()
             
             if not key:
                 continue
                 
-            print("⏳ Verificando no servidor...")
+            print("⏳ Verificando licença...")
             valid, msg, data = self.validate_online(key)
             
             if valid:
@@ -137,39 +140,104 @@ class LicenseSystem:
                     return False
 
     def validate_online(self, key):
-        """Baixa banco de dados do GitHub e valida chave"""
+        """Baixa banco de dados do GitHub e valida chave.
+
+        Se não houver conexão, tenta validar usando um banco local (license_database.json)
+        presente no projeto/instalador.
+        """
         try:
-            response = requests.get(LICENSE_DB_URL)
-            if response.status_code != 200:
-                return False, "Erro de conexão com servidor de licenças", None
-                
-            db = response.json()
-            
-            found_license = None
-            for lic in db["licenses"]:
-                if lic["key"] == key:
-                    found_license = lic
-                    break
-            
-            if not found_license:
-                return False, "Chave inválida ou não encontrada!", None
-            
-            # VALIDAÇÃO DE USO ÚNICO (HWID)
-            if found_license.get("hwid") and found_license["hwid"] is not None and found_license["hwid"] != self.device_id:
-                return False, "❌ CHAVE JÁ USADA! Esta licença já foi ativada em outro computador.", None
-                
-            # Verifica validade
-            expiry = datetime.fromisoformat(found_license["expiry_date"])
-            if expiry < datetime.now():
-                return False, "Esta chave já expirou!", None
-                
-            # VINCULA a chave a ESTE PC
-            found_license["hwid"] = self.device_id
-            
-            return True, "Chave validada com sucesso!", found_license
+            key_norm = str(key).strip().upper()
+
+            # 1) Tentar online com timeout
+            try:
+                response = requests.get(LICENSE_DB_URL, timeout=6)
+                if response.status_code == 200:
+                    db = response.json()
+                    found_license = self._find_license_in_db(db, key_norm)
+                    if found_license:
+                        return self._validate_and_bind(found_license, key_norm)
+            except Exception:
+                pass
+
+            # 2) Fallback offline
+            local_hit = self._find_license_in_local_dbs(key_norm)
+            if local_hit:
+                found_license, _src = local_hit
+                ok, msg, data = self._validate_and_bind(found_license, key_norm)
+                if ok:
+                    return True, f"{msg} (offline)", data
+                return False, msg, None
+
+            return False, "Erro de conexão com servidor de licenças (e chave não encontrada localmente)", None
             
         except Exception as e:
             return False, f"Erro ao verificar licença: {str(e)}", None
+
+    def _find_license_in_db(self, db, key_norm: str):
+        try:
+            items = db.get("licenses") if isinstance(db, dict) else None
+            if not isinstance(items, list):
+                return None
+            for lic in items:
+                k = str(lic.get("key", "")).strip().upper()
+                if k == key_norm:
+                    return lic
+        except Exception:
+            return None
+        return None
+
+    def _validate_and_bind(self, found_license: dict, key_norm: str):
+        lic_hwid = found_license.get("hwid")
+        if lic_hwid is not None and str(lic_hwid).strip() and str(lic_hwid).strip() != self.device_id:
+            return False, "❌ CHAVE JÁ USADA! Esta licença já foi ativada em outro computador.", None
+
+        try:
+            expiry = datetime.fromisoformat(str(found_license.get("expiry_date")))
+        except Exception:
+            return False, "Licença com data inválida no banco.", None
+
+        if expiry < datetime.now():
+            return False, "Esta chave já expirou!", None
+
+        found_license = dict(found_license)
+        found_license["key"] = key_norm
+        found_license["hwid"] = self.device_id
+        return True, "Chave validada com sucesso!", found_license
+
+    def _find_license_in_local_dbs(self, key_norm: str):
+        for path in self._iter_local_db_paths():
+            try:
+                if not path.exists() or not path.is_file():
+                    continue
+                with path.open("r", encoding="utf-8") as f:
+                    db = json.load(f)
+                lic = self._find_license_in_db(db, key_norm)
+                if lic:
+                    return lic, str(path)
+            except Exception:
+                continue
+        return None
+
+    def _iter_local_db_paths(self):
+        try:
+            yield Path.cwd() / "license_database.json"
+        except Exception:
+            pass
+
+        yield self._project_root / "license_database.json"
+        yield self._project_root / "INSTALADOR_FINAL" / "license_database.json"
+
+        # Scan subfolders inside INSTALADOR_FINAL for any license_database.json
+        try:
+            base = self._project_root / "INSTALADOR_FINAL"
+            if base.exists() and base.is_dir():
+                for child in base.iterdir():
+                    if child.is_dir():
+                        cand = child / "license_database.json"
+                        if cand.exists():
+                            yield cand
+        except Exception:
+            pass
 
     def load_local(self):
         if not os.path.exists(LICENSE_FILE):
