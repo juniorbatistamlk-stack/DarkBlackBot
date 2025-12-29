@@ -137,6 +137,18 @@ class LicenseManager:
             pady=8,
             cursor='hand2'
         ).pack(side='left', padx=5)
+
+        tk.Button(
+            toolbar,
+            text="☁️ PUBLICAR",
+            command=self.publish_github,
+            bg='#34495E',
+            fg='white',
+            font=('Arial', 10, 'bold'),
+            padx=20,
+            pady=8,
+            cursor='hand2'
+        ).pack(side='left', padx=5)
         
         # Lista de licenças
         list_frame = tk.Frame(self.root, bg='#1a1a2e')
@@ -446,6 +458,29 @@ class LicenseManager:
             "Copiado!",
             f"Chave de {name} copiada!\n\n{key}\n\n✅ Cole com Ctrl+V para enviar."
         )
+
+    def publish_github(self):
+        """Publicar alterações no GitHub"""
+        if not messagebox.askyesno("Publicar", "Deseja enviar as alterações para o servidor online?"):
+            return
+            
+        try:
+            # Verifica se existe o bat
+            bat_file = "ATUALIZAR_GITHUB.bat"
+            if not os.path.exists(bat_file):
+                # Tentar criar se não existir
+                with open(bat_file, 'w') as f:
+                    f.write('@echo off\n')
+                    f.write('git add .\n')
+                    f.write('git commit -m "Update licenses config"\n')
+                    f.write('git push origin main\n')
+                    f.write('pause\n')
+            
+            # Executa o bat em nova janela
+            os.system(f"start cmd /c {bat_file}")
+            
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao publicar: {str(e)}")
 
 def main():
     root = tk.Tk()

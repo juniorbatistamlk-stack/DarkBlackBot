@@ -5,7 +5,8 @@ import os
 import json
 import requests
 import hashlib
-from datetime import datetime, timedelta
+import time
+from datetime import datetime
 import platform
 import subprocess
 
@@ -37,43 +38,74 @@ class LicenseSystem:
     def check_license(self):
         """
         Verifica licença completa (Online + Local)
-        Retorna: (is_valid, message, days_left)
+        Retorna: True se válido, False se inválido/bloqueado
         """
-        # 1. Tenta carregar licença salva localmente
+        # Tenta carregar licença salva localmente
         local_data = self.load_local()
         
+        # 1. SEM LICENÇA -> PEDIR ATIVAÇÃO
         if not local_data:
-            print("\n📋 Nenhuma licença encontrada neste computador.")
             return self.request_activation()
             
-        # 2. Verifica se a licença salva é para este PC
+        # 2. VERIFICA HWID (ANTICÓPIA)
         if local_data.get("hwid") != self.device_id:
-            print("\n❌ Esta licença pertence a outro computador!")
-            # Apaga licença inválida
+            print("\n❌ LICENÇA INVÁLIDA PARA ESTE COMPUTADOR!")
             if os.path.exists(LICENSE_FILE):
                 os.remove(LICENSE_FILE)
             return self.request_activation()
             
-        # 3. Verifica expiração
-        expiry_date = datetime.fromisoformat(local_data["expiry_date"])
-        days_left = (expiry_date - datetime.now()).days
+        # 3. VERIFICA ESTADO E VALIDADE
+        try:
+            expiry_date = datetime.fromisoformat(local_data["expiry_date"])
+            days_left = (expiry_date - datetime.now()).days
+        except:
+            print("\n❌ ERRO NA LICENÇA (DATA CORROMPIDA)")
+            if os.path.exists(LICENSE_FILE):
+                os.remove(LICENSE_FILE)
+            return self.request_activation()
         
-        # Lógica de Avisos
+        # === CENÁRIO 1: LICENÇA VENCIDA (BLOQUEIO) ===
         if days_left < 0:
-            print("\n❌ SEU ACESSO EXPIROU!")
-            print(f"Sua licença venceu em: {expiry_date.strftime('%d/%m/%Y')}")
-            print(f"💬 Para continuar faturando, renove agora: {SUPPORT_CONTACT}")
+            self.show_expired_screen(days_left)
             input("\nPressione ENTER para sair...")
             return False
             
+        # === CENÁRIO 2: LICENÇA VENCENDO (AVISO) ===
         if days_left <= 3:
-            print("\n⚠️ AVISO DE VENCIMENTO ⚠️")
-            print(f"Seu acesso vence em {days_left} dias!")
-            print(f"💬 Evite bloqueios, chame o suporte para renovar: {SUPPORT_CONTACT}")
-            print("="*60)
+            self.show_warning_screen(days_left)
+            print(f"\n✅ Acesso liberado temporariamente... ({days_left} dias restantes)")
+            time.sleep(3) # Delay para ler
+            return True
             
-        print(f"\n✅ Licença Ativa! Dias restantes: {days_left}")
+        # === CENÁRIO 3: LICENÇA OK (SILENCIOSO) ===
+        print(f"✅ Licença Validada! Dias restantes: {days_left}")
         return True
+
+    def show_expired_screen(self, days_left):
+        """Tela de Bloqueio Persuasiva"""
+        print("\n" + "█"*60)
+        print("🛑 ACESSO BLOQUEADO - LICENÇA EXPIRADA")
+        print("█"*60)
+        print("\n😱 OPA! SEU ROBÔ PAROU DE FATURAR!")
+        print(f"Sua licença venceu há {abs(days_left)} dias.\n")
+        print("Para continuar faturando muito no automático e não")
+        print("perder as oportunidades de hoje, renove agora!\n")
+        print("👉 CLIQUE AQUI AGORA: " + SUPPORT_CONTACT)
+        print("\n(Renove e receba sua nova chave em minutos)")
+        print("█"*60 + "\n")
+
+    def show_warning_screen(self, days_left):
+        """Tela de Aviso Persuasiva"""
+        print("\n" + "═"*60)
+        print(f"⚠️ AVISO URGENTE: RESTAM APENAS {days_left} DIAS!")
+        print("═"*60)
+        print("\nSeu acesso ao bot está vencendo...")
+        print("Não deixe para a última hora e corra o risco de")
+        print("ficar sem operar justo no melhor dia do mercado!\n")
+        print("🚀 Garanta sua renovação agora mesmo:")
+        print("👉 " + SUPPORT_CONTACT)
+        print("\nEvite paradas desnecessárias no seu lucro!")
+        print("═"*60 + "\n")
 
     def request_activation(self):
         """Solicita chave ao usuário e valida online"""
@@ -82,7 +114,7 @@ class LicenseSystem:
         print("="*60)
         print(f"Seu ID de Hardware: {self.device_id}")
         print("\nInsira sua chave de licença para ativar.")
-        print("💬 Adquira em: " + SUPPORT_CONTACT)
+        print("Adquira em: " + SUPPORT_CONTACT)
         print("-" * 60)
         
         while True:
@@ -109,7 +141,6 @@ class LicenseSystem:
         try:
             response = requests.get(LICENSE_DB_URL)
             if response.status_code != 200:
-                # Se não conseguir acessar internet/github
                 return False, "Erro de conexão com servidor de licenças", None
                 
             db = response.json()
@@ -122,18 +153,17 @@ class LicenseSystem:
             
             if not found_license:
                 return False, "Chave inválida ou não encontrada!", None
-                
-            # Verifica se já está vinculada a OUTRO pc (se tiver o campo hwid no banco online)
-            # Nota: O banco online geralmente não tem HWID a menos que você atualize ele
-            # Mas podemos implementar verificação de "usada" aqui se quiser
             
+            # VALIDAÇÃO DE USO ÚNICO (HWID)
+            if found_license.get("hwid") and found_license["hwid"] is not None and found_license["hwid"] != self.device_id:
+                return False, "❌ CHAVE JÁ USADA! Esta licença já foi ativada em outro computador.", None
+                
             # Verifica validade
             expiry = datetime.fromisoformat(found_license["expiry_date"])
             if expiry < datetime.now():
                 return False, "Esta chave já expirou!", None
                 
-            # Prepara dados para salvar localmente
-            # Adicionamos o HWID ATUAL para "travar" neste PC
+            # VINCULA a chave a ESTE PC
             found_license["hwid"] = self.device_id
             
             return True, "Chave validada com sucesso!", found_license
@@ -154,7 +184,7 @@ class LicenseSystem:
         with open(LICENSE_FILE, 'w') as f:
             json.dump(data, f)
 
-# Função auxiliar para manter compatibilidade com main.py antigo
+# Função auxiliar para manter compatibilidade
 def check_license():
     system = LicenseSystem()
     return system.check_license()

@@ -104,6 +104,137 @@ def log_msg(msg):
     if len(bot_logs) > 10:
         bot_logs.pop(0)
 
+def show_goal_achieved_screen(profit):
+    """Tela especial de parabéns ao atingir a meta"""
+    from rich.panel import Panel
+    from rich.text import Text
+    from rich.align import Align
+    
+    black_spacer(2)
+    
+    # Arte ASCII de troféu
+    trophy = """
+    ⠀⠀⠀⠀⠀⣀⣀⡀⠀⠀⠀⠀⠀
+    ⠀⠀⠀⢰⣿⣿⣿⣿⡆⠀⠀⠀⠀
+    ⠀⠀⠀⠘⣿⣿⣿⣿⠃⠀⠀⠀⠀
+    ⠀⠀⠀⠀⠙⢿⡿⠋⠀⠀⠀⠀⠀
+    ⠀⠀⠀⢠⣴⣶⣶⣦⡄⠀⠀⠀⠀
+    ⠀⠀⠀⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀
+    ⠀⠀⠀⠙⠻⠿⠿⠟⠋⠀⠀⠀⠀
+    """
+    
+    message = Text()
+    message.append("🎉 ", style="bold bright_yellow")
+    message.append("PARABÉNS! META ATINGIDA!", style="bold bright_green")
+    message.append(" 🎉", style="bold bright_yellow")
+    
+    profit_text = Text()
+    profit_text.append("💰 Lucro do Dia: ", style="bold bright_white")
+    profit_text.append(f"R$ {profit:.2f}", style="bold bright_green")
+    
+    motivation = [
+        "✨ Você provou que disciplina e estratégia funcionam!",
+        "🎯 A consistência é o segredo dos grandes traders.",
+        "💎 Proteja esse lucro e volte amanhã ainda mais forte!",
+        "🚀 Grandes resultados vêm de pequenas vitórias diárias.",
+        "",
+        "📊 Dica Profissional:",
+        "   • Não tente recuperar mais - a ganância é inimiga do lucro",
+        "   • Anote o que funcionou hoje para replicar amanhã",
+        "   • Comemore essa vitória, você merece! 🍾"
+    ]
+    
+    content = Text()
+    content.append(trophy, style="bright_yellow", justify="center")
+    content.append("\n\n")
+    content.append(message, justify="center")
+    content.append("\n\n")
+    content.append(profit_text, justify="center")
+    content.append("\n\n")
+    for line in motivation:
+        content.append(line + "\n", style="bright_white" if line else "")
+    
+    panel = Panel(
+        Align.center(content),
+        border_style="bright_green",
+        padding=(1, 2),
+        title="[bold bright_green]═══ MISSÃO CUMPRIDA ═══[/]",
+        subtitle="[dim]O mercado recompensa os disciplinados[/]"
+    )
+    
+    console.print(panel, style="on black")
+    black_spacer(1)
+
+def show_stop_loss_screen(loss):
+    """Tela especial de motivação ao acionar stop loss"""
+    from rich.panel import Panel
+    from rich.text import Text
+    from rich.align import Align
+    
+    black_spacer(2)
+    
+    message = Text()
+    message.append("🛑 ", style="bold bright_red")
+    message.append("STOP LOSS ACIONADO", style="bold bright_red")
+    message.append(" 🛑", style="bold bright_red")
+    
+    loss_text = Text()
+    loss_text.append("💸 Perda do Dia: ", style="bold bright_white")
+    loss_text.append(f"R$ {abs(loss):.2f}", style="bold bright_red")
+    
+    motivation = [
+        "",
+        "💪 NÃO DESISTA! Todo trader passa por dias difíceis.",
+        "",
+        "🎯 O que separa vencedores de perdedores:",
+        "   ✓ Vencedores aceitam o loss e voltam mais fortes",
+        "   ✗ Perdedores tentam recuperar e quebram a banca",
+        "",
+        "🧠 Lições do Mercado:",
+        "   • Este loss te protegeu de perdas maiores",
+        "   • Traders profissionais têm dias ruins também",
+        "   • O mercado estará aqui amanhã - sua banca não",
+        "",
+        "🌅 Amanhã é um novo dia:",
+        "   📚 Revise o que deu errado hoje",
+        "   🎮 Volte descansado e focado",
+        "   💎 Preserve sua banca - ela é seu maior ativo",
+        "",
+        "🔥 Lembre-se: Trading é uma maratona, não uma corrida!",
+        "   Cada dia é uma nova oportunidade de crescer."
+    ]
+    
+    content = Text()
+    content.append(message, justify="center")
+    content.append("\n\n")
+    content.append(loss_text, justify="center")
+    content.append("\n")
+    for line in motivation:
+        if "NÃO DESISTA" in line:
+            content.append(line + "\n", style="bold bright_yellow")
+        elif line.startswith("   ✓"):
+            content.append(line + "\n", style="bright_green")
+        elif line.startswith("   ✗"):
+            content.append(line + "\n", style="dim red")
+        elif line.startswith("🔥"):
+            content.append(line + "\n", style="bold bright_cyan")
+        elif line.startswith(("🎯", "🧠", "🌅")):
+            content.append(line + "\n", style="bold bright_white")
+        else:
+            content.append(line + "\n", style="bright_white" if line else "")
+    
+    panel = Panel(
+        Align.center(content),
+        border_style="bright_red",
+        padding=(1, 2),
+        title="[bold bright_red]═══ PROTEÇÃO ATIVADA ═══[/]",
+        subtitle="[dim]Viva para operar outro dia[/]"
+    )
+    
+    console.print(panel, style="on black")
+    black_spacer(1)
+
+
 def get_strategy(choice, api, ai_analyzer=None):
     strategies = {
         1: FerreiraStrategy,
@@ -236,25 +367,13 @@ def run_trading_session(api, strategy, pairs, cfg, memory, ai_analyzer):
             try:
                 # === VERIFICAR LIMITES ===
                 if cfg.profit_goal > 0 and current_profit >= cfg.profit_goal:
-                    log_msg(f"[bold green]═══════════════════════════════════════[/bold green]")
-                    log_msg(f"[bold green]🏆 PARABÉNS! META ATINGIDA! 🎉[/bold green]")
-                    log_msg(f"[bold green]💰 Lucro: R${current_profit:.2f}[/bold green]")
-                    log_msg(f"[bold green]═══════════════════════════════════════[/bold green]")
-                    log_msg(f"[green]✅ Encerramento automático ativado.[/green]")
-                    log_msg(f"[cyan]📊 Saia do mercado e proteja seu lucro![/cyan]")
-                    log_msg(f"[dim]Dica: Consistência é a chave do sucesso![/dim]")
                     stop_threads = True
+                    show_goal_achieved_screen(current_profit)
                     break
                 
                 if current_profit <= -cfg.stop_loss:
-                    log_msg(f"[bold red]═══════════════════════════════════════[/bold red]")
-                    log_msg(f"[bold red]🛑 STOP LOSS ACIONADO[/bold red]")
-                    log_msg(f"[bold red]💸 Perda: R${abs(current_profit):.2f}[/bold red]")
-                    log_msg(f"[bold red]═══════════════════════════════════════[/bold red]")
-                    log_msg(f"[yellow]⚠️ Proteção de capital ativada.[/yellow]")
-                    log_msg(f"[cyan]🧘 Pare por hoje. O mercado estará aqui amanhã.[/cyan]")
-                    log_msg(f"[dim]Lembre-se: Preservar a banca é essencial![/dim]")
                     stop_threads = True
+                    show_stop_loss_screen(current_profit)
                     break
                 
                 # === CALCULAR TIMING ===

@@ -1,0 +1,29 @@
+PACOTE DE ENTREGA v3.7
+======================
+
+1. Gerenciador_Licencas_v3.zip
+   ---------------------------
+   - FERRAMENTA DO DONO (VOCÊ).
+   - Contém o Gerador de Keys (Aplicativo .EXE).
+   - Contém o banco de dados de licenças.
+   - Contém o script "ATUALIZAR_GITHUB.bat".
+   
+   COMO USAR:
+   1. Extraia tudo.
+   2. Abra o Gerenciador_Licencas_v3.exe.
+   3. Crie/Edite chaves.
+   4. Clique no botão "PUBLICAR" para atualizar o sistema online.
+
+2. DarkBlackBot_v3.7_Final.zip
+   ---------------------------
+   - PRODUTO PARA O CLIENTE.
+   - Contém o Robô completo.
+   - Novo sistema de proteção "Instale e Esqueça".
+   - Validação HWID (Anticópia) + Avisos de Vencimento.
+   
+   COMO O CLIENTE USA:
+   1. Ele extrai e clica em INICIAR_BOT.bat.
+   2. Na primeira vez, pede a chave.
+   3. Depois disso, entra direto!
+
+OBS: Se você atualizar uma licença no Gerenciador e Publicar, o bot do cliente baixará a nova validade automaticamente na próxima verificação.
