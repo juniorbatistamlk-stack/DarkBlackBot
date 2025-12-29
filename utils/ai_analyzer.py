@@ -188,7 +188,7 @@ class AIAnalyzer:
         return False
     
     def _get_memory_context(self, desc):
-        """Obtém contexto da memória para o prompt"""
+        """Obtém contexto COMPLETO da memória para o prompt (todas as estratégias)"""
         if not self.memory:
             return "Sem historico disponivel."
         
@@ -202,26 +202,78 @@ class AIAnalyzer:
             
             total_trades = stats.get('total_trades', 0)
             win_rate = stats.get('win_rate', 0)
-            context = f"HISTORICO GERAL: {total_trades} trades | Win Rate: {win_rate:.1f}%\n"
+            context = f"=== HISTORICO GLOBAL (TODAS ESTRATEGIAS) ===\n"
+            context += f"Total: {total_trades} trades | Win Rate Global: {win_rate:.1f}%\n"
             
-            # Estatísticas do padrão específico (opcional)
+            # Últimos 5 trades (qualquer estratégia)
+            history = getattr(self.memory, 'history', [])
+            if history and len(history) > 0:
+                last_5 = history[-5:][::-1]  # Últimos 5, do mais recente
+                context += f"\nULTIMOS 5 TRADES:\n"
+                for t in last_5:
+                    result = t.get('result', '?')
+                    pair = t.get('pair', '?')
+                    pat = t.get('pattern', '?')[:25]
+                    emoji = "✅" if result == "WIN" else "❌" if result == "LOSS" else "🔄"
+                    context += f"  {emoji} {pair} | {pat}\n"
+            
+            # Performance por par (se disponível)
             patterns = stats.get("patterns", {})
+            pair_stats = {}
+            for h in history[-50:]:  # Analisar últimos 50 trades
+                p = h.get('pair', 'UNKNOWN')
+                if p not in pair_stats:
+                    pair_stats[p] = {'wins': 0, 'losses': 0}
+                if h.get('result') == 'WIN':
+                    pair_stats[p]['wins'] += 1
+                elif h.get('result') == 'LOSS':
+                    pair_stats[p]['losses'] += 1
+            
+            if pair_stats:
+                context += f"\nPERFORMANCE POR ATIVO (ultimos 50):\n"
+                for pair, ps in sorted(pair_stats.items(), key=lambda x: x[1]['wins'] - x[1]['losses'], reverse=True)[:5]:
+                    total = ps['wins'] + ps['losses']
+                    wr = (ps['wins'] / max(total, 1)) * 100
+                    emoji = "🔥" if wr >= 60 else "⚠️" if wr < 45 else "📊"
+                    context += f"  {emoji} {pair}: {wr:.0f}% ({total} trades)\n"
+            
+            # Estatísticas do padrão específico
             if pattern in patterns:
                 p = patterns[pattern]
                 wins = int(p.get("wins") or 0)
                 total = int(p.get("total") or 0)
                 pattern_rate = (wins / max(total, 1) * 100)
-                context += f"PADRAO ATUAL ({pattern}): Win Rate {pattern_rate:.0f}%\n"
+                if pattern_rate >= 60:
+                    context += f"\n✅ PADRAO ATUAL ({pattern[:30]}): Win Rate {pattern_rate:.0f}% - BOM HISTORICO!\n"
+                elif pattern_rate < 40 and total >= 5:
+                    context += f"\n⚠️ PADRAO ATUAL ({pattern[:30]}): Win Rate {pattern_rate:.0f}% - CUIDADO!\n"
+                else:
+                    context += f"\n📊 PADRAO ATUAL ({pattern[:30]}): Win Rate {pattern_rate:.0f}%\n"
             else:
-                context += f"PADRAO ATUAL: Novo padrao, sem historico.\n"
+                context += f"\n🆕 PADRAO ATUAL: Novo padrao, sem historico.\n"
             
-            # Melhores padrões (se método existir)
-            if hasattr(self.memory, 'get_best_patterns'):
-                best = self.memory.get_best_patterns(min_trades=5)[:3]
-                if best:
-                    context += "MELHORES PADROES: "
-                    context += ", ".join([f"{p.get('name', 'N/A')[:20]}({p.get('win_rate', 0):.0f}%)" for p in best])
-                    context += "\n"
+            # Padrões a EVITAR (win rate < 40% com 5+ trades)
+            avoid_patterns = []
+            prefer_patterns = []
+            for pname, pdata in patterns.items():
+                total = int(pdata.get("total") or 0)
+                wins = int(pdata.get("wins") or 0)
+                if total >= 5:
+                    wr = (wins / total) * 100
+                    if wr < 40:
+                        avoid_patterns.append((pname[:20], wr, total))
+                    elif wr >= 65:
+                        prefer_patterns.append((pname[:20], wr, total))
+            
+            if avoid_patterns:
+                context += f"\n🚫 PADROES A EVITAR:\n"
+                for ap in avoid_patterns[:3]:
+                    context += f"   ❌ {ap[0]} ({ap[1]:.0f}% em {ap[2]} trades)\n"
+            
+            if prefer_patterns:
+                context += f"\n🎯 PADROES QUE MAIS FUNCIONAM:\n"
+                for pp in sorted(prefer_patterns, key=lambda x: x[1], reverse=True)[:3]:
+                    context += f"   ✅ {pp[0]} ({pp[1]:.0f}% em {pp[2]} trades)\n"
             
             return context
         except Exception as e:
