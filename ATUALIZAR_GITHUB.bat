@@ -1,23 +1,38 @@
 @echo off
 echo ==========================================
-echo    ATUALIZAR BOT NO GITHUB (SIMPLES)
+echo    PUBLICAR LICENCAS NO GITHUB
 echo ==========================================
 echo.
+
+REM ===================================================
+REM PASSO 0: Copiar license_database.json para raiz
+REM (resolve problema de pasta separada do Git)
+REM ===================================================
+echo 0. Sincronizando banco de licencas...
+if exist "license_database.json" (
+    copy /Y "license_database.json" "..\..\license_database.json" >nul 2>&1
+    if %errorlevel%==0 (
+        echo    [OK] Banco copiado para raiz do projeto
+    ) else (
+        echo    [AVISO] Nao foi possivel copiar para raiz
+    )
+)
+
+REM Muda para a raiz do projeto Git
+cd /d "%~dp0..\.."
 
 echo 1. Buscando novidades (Pull)...
 "C:\Program Files\Git\cmd\git.exe" pull origin main
 
 echo 2. Salvando suas mudancas...
-"C:\Program Files\Git\cmd\git.exe" add .
-set /p msg="Escreva o que mudou (ou aperte ENTER para 'Atualizacao'): "
-if "%msg%"=="" set msg=Atualizacao
-"C:\Program Files\Git\cmd\git.exe" commit -m "%msg%"
+"C:\Program Files\Git\cmd\git.exe" add license_database.json
+"C:\Program Files\Git\cmd\git.exe" commit -m "Sync: Atualizacao de licencas"
 
 echo 3. Enviando...
 "C:\Program Files\Git\cmd\git.exe" push origin main
 
 echo.
 echo ==========================================
-echo    FIM! Se nao deu erro vermelho, foi.
+echo    CONCLUIDO! Licencas publicadas.
 echo ==========================================
 pause
