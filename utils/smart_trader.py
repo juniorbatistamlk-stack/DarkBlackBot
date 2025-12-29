@@ -97,6 +97,63 @@ class SmartTrader:
         else:
             pass # Evitar print direto para não quebrar UI
 
+    def _explicar_entrada(self, desc: str, signal: str, pattern: str) -> str:
+        """
+        Gera explicação humanizada do motivo da entrada.
+        Ex: 'Entrando em CALL devido fluxo de vela de alta com força compradora'
+        """
+        desc_upper = desc.upper()
+        pattern_upper = pattern.upper()
+        direcao = "alta" if signal == "CALL" else "baixa"
+        
+        # Detectar tipo de setup
+        if "FLUXO" in desc_upper or "MOMENTUM" in pattern_upper:
+            return f"Fluxo de vela de {direcao} detectado - força {'compradora' if signal == 'CALL' else 'vendedora'} dominante"
+        
+        elif "REVERSÃO" in desc_upper or "REVERSAL" in pattern_upper:
+            if "SUPORTE" in desc_upper or "SUPPORT" in pattern_upper:
+                return f"Reversão confirmada em zona de SUPORTE - preço rejeitou fundo e sinaliza {direcao}"
+            elif "RESISTÊNCIA" in desc_upper or "RESIST" in pattern_upper:
+                return f"Reversão confirmada em zona de RESISTÊNCIA - preço rejeitou topo e sinaliza {direcao}"
+            else:
+                return f"Padrão de reversão detectado - mercado mudando direção para {direcao}"
+        
+        elif "MARUBOZU" in pattern_upper:
+            return f"Vela MARUBOZU de {direcao} - corpo cheio sem pavios indica força extrema"
+        
+        elif "THREE" in pattern_upper or "SOLDIERS" in pattern_upper or "CROWS" in pattern_upper:
+            return f"Padrão 3 velas consecutivas de {direcao} - confirmação de tendência forte"
+        
+        elif "ENGULF" in pattern_upper or "ENGOLFO" in desc_upper:
+            return f"Engolfo de {direcao} - vela atual engoliu anterior, sinalizando mudança de controle"
+        
+        elif "IMPULSE" in pattern_upper or "IMPULSO" in desc_upper:
+            return f"Vela de impulso de {direcao} - aceleração do movimento com volume"
+        
+        elif "HAMMER" in pattern_upper or "MARTELO" in desc_upper:
+            return "Martelo detectado em suporte - rejeição de preço mais baixo"
+        
+        elif "SHOOTING" in pattern_upper or "STAR" in pattern_upper:
+            return "Shooting Star em resistência - rejeição de preço mais alto"
+        
+        elif "PIN_BAR" in pattern_upper:
+            return f"Pin Bar de {direcao} - pavio longo indicando rejeição de nível"
+        
+        elif "MORNING" in pattern_upper:
+            return "Morning Star - padrão de reversão de baixa para alta"
+        
+        elif "EVENING" in pattern_upper:
+            return "Evening Star - padrão de reversão de alta para baixa"
+        
+        elif "BLACK" in desc_upper:
+            return f"Setup BLACK FLEX a favor da tendência - fluxo institucional de {direcao}"
+        
+        elif "FALLBACK" in pattern_upper:
+            return f"Momentum simples detectado - preço em movimento de {direcao}"
+        
+        else:
+            # Fallback genérico
+            return f"Setup técnico identificado para {signal} - condições favoráveis para {direcao}"
         
     def analyze_all_pairs(self, timeframe, exclude_pairs=None):
         """
@@ -356,6 +413,10 @@ class SmartTrader:
             pattern = trade_info.get("pattern", desc)
             
             log_func(f"[green]💰 Executando ordem [{cfg.option_type}]: {signal} em {pair} (R${cfg.amount:.2f})[/green]")
+            
+            # === EXPLICAÇÃO DO MOTIVO DA ENTRADA ===
+            motivo = self._explicar_entrada(desc, signal, pattern)
+            log_func(f"[cyan]📝 MOTIVO: {motivo}[/cyan]")
 
             # === TRAVA DE TEMPO (VIRADA DE VELA) ===
             # Só permite abertura no INÍCIO da nova vela (primeiro 5s).

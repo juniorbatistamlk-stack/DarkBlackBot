@@ -262,7 +262,7 @@ class AIAnalyzer:
                     wr = (wins / total) * 100
                     if wr < 40:
                         avoid_patterns.append((pname[:20], wr, total))
-                    elif wr >= 65:
+                    elif wr >= 60:
                         prefer_patterns.append((pname[:20], wr, total))
             
             if avoid_patterns:
