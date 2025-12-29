@@ -11,9 +11,8 @@ import platform
 import subprocess
 from pathlib import Path
 
-# URL DO SEU ARQUIVO SITE (ALTERE ISTO DEPOIS!)
-# Por enquanto usaremos o mesmo repositório de updates
-LICENSE_DB_URL = "https://raw.githubusercontent.com/juniorbatistamlk-stack/updates-bot/main/license_database.json"
+# URL DO BANCO DE LICENÇAS (Repositório Público)
+LICENSE_DB_URL = "https://raw.githubusercontent.com/juniorbatistamlk-stack/DarkBlackBot/main/license_database.json"
 
 LICENSE_FILE = ".license"
 SUPPORT_CONTACT = "https://t.me/magoTrader_01"
