@@ -577,11 +577,13 @@ def run_trading_session(api, strategy, pairs, cfg, memory, ai_analyzer):
                 try:
                     duration = int(getattr(cfg, "timeframe", 1)) * 60
                     now_local = time.time()
-                    remaining = int(duration - (now_local % duration))
-                    if remaining <= 0 or remaining > duration:
-                        remaining = duration
+                    # Timer de 0 a 60 (tempo decorrido, não restante)
+                    elapsed = int(now_local % duration)
+                    if elapsed < 0 or elapsed >= duration:
+                        elapsed = 0
+                    remaining = elapsed  # Mantém nome da variável para compatibilidade
                 except Exception:
-                    remaining = 60  # Fallback 60s
+                    remaining = 0  # Fallback 0s
 
                 # Atualizar display (auto_refresh=False exige refresh=True)
                 try:

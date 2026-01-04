@@ -40,6 +40,12 @@ class SmartTrader:
         self._scan_log_min_interval = 2.0
         # Cooldown por par quando uma ordem não abre ou falha
         self._pair_cooldown = {}
+        
+        # SESSION LEARNING - Ajusta comportamento baseado na sessão
+        self._session_consecutive_losses = 0
+        self._session_consecutive_wins = 0
+        self._min_score = 50  # Score mínimo para executar (50 = neutro)
+        self._min_confidence = 55  # Confiança mínima (já implementado)
 
     def _fallback_signal(self, timeframe, exclude_pairs):
         """Fallback simples baseado em momentum para não ficar sem operações."""
@@ -70,8 +76,8 @@ class SmartTrader:
                     "signal": "CALL",
                     "desc": f"Fallback Momentum CALL | short {short:.5f} > mid {mid:.5f} > long {long:.5f}",
                     "pattern": "FALLBACK_MOMENTUM",
-                    "confidence": 52,
-                    "backtest_rate": 52,
+                    "confidence": 60,
+                    "backtest_rate": 55,
                 }
 
             if short < mid < long and slope < -threshold and momentum < 0:
@@ -80,8 +86,8 @@ class SmartTrader:
                     "signal": "PUT",
                     "desc": f"Fallback Momentum PUT | short {short:.5f} < mid {mid:.5f} < long {long:.5f}",
                     "pattern": "FALLBACK_MOMENTUM",
-                    "confidence": 52,
-                    "backtest_rate": 52,
+                    "confidence": 60,
+                    "backtest_rate": 55,
                 }
 
         return None
@@ -330,6 +336,25 @@ class SmartTrader:
                 if hasattr(self.strategy, 'get_last_ai_context'):
                     ai_ctx = self.strategy.get_last_ai_context()
 
+                # SCORE PRÉ-ANÁLISE - Avaliação objetiva antes da IA
+                if hasattr(self.ai_analyzer, 'calculate_trade_score'):
+                    score, breakdown = self.ai_analyzer.calculate_trade_score(
+                        candidate["signal"], trend, zones, candles, candidate["desc"]
+                    )
+                    # Ajustar score mínimo baseado em session learning
+                    effective_min = self._min_score
+                    if self._session_consecutive_losses >= 3:
+                        effective_min = 60  # Mais conservador após 3 losses
+                        self._log_system(f"[AI] ⚠️ Modo conservador ativo (3+ losses)")
+                    
+                    self._log_system(f"[AI] 📊 Score: {score}/{effective_min} | {' '.join(f'{k}:{v}' for k,v in list(breakdown.items())[:3])}")
+                    
+                    if score < effective_min:
+                        self._log_system(f"[AI] 🛑 Score baixo ({score} < {effective_min}). Pulando {pair}...")
+                        candidate["ai_rejected"] = True
+                        candidate["ai_reason"] = f"Score {score} < {effective_min}"
+                        continue  # Próximo candidato
+
                 ai_confirm, ai_confidence, ai_reason = self.ai_analyzer.analyze_signal(
                     candidate["signal"], candidate["desc"], candles, zones, trend, pair, ai_context=ai_ctx
                 )
@@ -350,29 +375,20 @@ class SmartTrader:
                     candidate["ai_rejected"] = True
                     candidate["ai_reason"] = ai_reason
             else:
-                # Se a IA rejeitar tudo, não travar o bot em modo agressivo.
-                # Fallback: permitir apenas entradas A FAVOR da tendência (sem contra-tendência).
-                fallback = None
-                for c in signals:
-                    desc_txt = str(c.get("desc", ""))
-                    if "CONTRA-TEND" in desc_txt.upper():
-                        continue
-                    fallback = c
-                    break
-
-                if fallback:
-                    reason = str(fallback.get("ai_reason") or "IA rejeitou os setups")
-                    fallback = dict(fallback)
-                    # Evitar colchetes: Rich markup pode interpretar como tag e bagunçar cores/colunas.
-                    fallback["desc"] = f"{fallback.get('desc','')} | AI_OVERRIDE: {reason}"
-                    self._log_system("[AI] ⚠️ IA rejeitou todos. Executando fallback a favor da tendência.")
-                    return fallback
-                return None
+                # OPÇÃO B: Respeitar decisão da IA - não executar fallback
+                self._log_system("[AI] 🛑 IA rejeitou todos os sinais. Aguardando melhor setup...")
+                return None  # Não executar quando IA rejeita
         elif self.ai_analyzer:
             # IA existe mas foi desabilitada (ex: chave inválida)
             reason = getattr(self.ai_analyzer, 'disabled_reason', None)
             if reason:
                 self._log_system(f"[AI] ⚠️ IA desabilitada: {reason}")
+        
+        # OPÇÃO B: Verificar confiança mínima antes de executar
+        MIN_CONFIDENCE = 55
+        if best.get("confidence", 0) < MIN_CONFIDENCE:
+            self._log_system(f"[AI] ⚠️ Confiança baixa ({best.get('confidence', 0):.0f}% < {MIN_CONFIDENCE}%). Pulando...")
+            return None
         
         return best
     
@@ -520,6 +536,12 @@ class SmartTrader:
                         log_func(f"[bold green]✅ WIN +R${result:.2f} | {pair}[/bold green]")
                         self.memory.record_trade(pair, signal, pattern, "WIN", result, "UNKNOWN")
                         
+                        # SESSION LEARNING - Reset losses, increment wins
+                        self._session_consecutive_losses = 0
+                        self._session_consecutive_wins += 1
+                        if self._session_consecutive_wins >= 3:
+                            self._log_system(f"[AI] 🔥 Sequência positiva ({self._session_consecutive_wins} wins)")
+                        
                         # Salvar para aprendizado da IA
                         self.trade_history.add_trade(trade_info, "win", result)
                         
@@ -528,6 +550,12 @@ class SmartTrader:
                     elif result < 0:
                         log_func(f"[red]❌ LOSS -R${abs(result):.2f} | {pair}[/red]")
                         self.memory.record_trade(pair, signal, pattern, "LOSS", result, "UNKNOWN")
+                        
+                        # SESSION LEARNING - Increment losses, reset wins
+                        self._session_consecutive_losses += 1
+                        self._session_consecutive_wins = 0
+                        if self._session_consecutive_losses >= 3:
+                            self._log_system(f"[AI] ⚠️ ATENÇÃO: {self._session_consecutive_losses} losses seguidos. Aumentando filtros...")
                         
                         # Salvar para aprendizado da IA
                         self.trade_history.add_trade(trade_info, "loss", result)
